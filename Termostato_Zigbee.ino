@@ -27,6 +27,10 @@
  *   - sensor:  temperatura y humedad del SHT31.
  *   - switch:  calefacción forzada (enciende sin mirar la temperatura, para
  *              pruebas o si falla el sensor; se apaga sola a los 30 min).
+ *   - number:  temperatura externa. HA escribe aquí la de otro sensor (p. ej.
+ *              un SONOFF SNZB-02D) con una automatización.
+ *   - switch:  usar sensor externo para regular (también desde la pantalla).
+ *              Si el externo deja de llegar, vuelve solo al SHT31.
  *   - update:  actualizaciones de firmware por Zigbee (OTA).
  *
  * El control (histéresis) lo hace el propio ESP32: si se cae HA o la red
@@ -71,6 +75,8 @@
 #define EP_ACS         11
 #define EP_SENSOR      12
 #define EP_FORCE       13
+#define EP_EXT_TEMP    14
+#define EP_EXT_SELECT  15
 
 #define HYSTERESIS        0.3f      // ºC por debajo / encima de la consigna
 #define MIN_CYCLE_MS      (3UL * 60 * 1000)  // tiempo mínimo encendida/apagada (protege la caldera)
@@ -78,6 +84,7 @@
 #define REPORT_INTERVAL_MS 60000    // envío periódico a ZHA aunque no cambie nada
 #define SENSOR_FAIL_MS    60000     // sin lecturas válidas este tiempo -> apaga la calefacción
 #define FORCE_TIMEOUT_MS  (30UL * 60 * 1000)  // la calefacción forzada se apaga sola pasado este tiempo
+#define EXT_TIMEOUT_MS    (60UL * 60 * 1000)  // sin temperatura externa este tiempo -> usa el SHT31
 #define SAVE_DELAY_MS     5000
 #define RESET_HOLD_MS     3000
 
@@ -207,19 +214,43 @@ ZigbeePowerOutlet       zbAcs(EP_ACS);
 ZigbeeTempSensor        zbSensor(EP_SENSOR);
 ZigbeePowerOutlet       zbForce(EP_FORCE);
 
+// Salida analógica (ZHA la muestra como number) donde HA escribe la temperatura externa
+class ZigbeeExternalTemp : public ZigbeeAnalog {
+public:
+  ZigbeeExternalTemp(uint8_t endpoint) : ZigbeeAnalog(endpoint) {}
+  bool setUnitsCelsius() {
+    esp_zb_attribute_list_t *ao =
+      esp_zb_cluster_list_get_cluster(_cluster_list, ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    uint16_t units = 62;   // ºC (BACnet engineering units)
+    return ao && esp_zb_analog_output_cluster_add_attr(ao, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_ENGINEERING_UNITS_ID, &units) == ESP_OK;
+  }
+};
+ZigbeeExternalTemp      zbExtTemp(EP_EXT_TEMP);
+ZigbeePowerOutlet       zbExtSelect(EP_EXT_SELECT);
+
 // ---------------- Estado ----------------
 struct Config {
   bool    heatMode;     // calefacción en modo Calor (true) o Apagado
   int16_t setpoint;     // 0,01 ºC
   int16_t minLimit, maxLimit;
   int8_t  calibration;  // 0,1 ºC
-  bool    acsOn;        // agua caliente pedida
+  bool    acsOn;        // caldera (agua caliente) encendida
+  bool    useExternal;  // regular con el sensor externo
 };
 Config cfg;
 
-float tempC = NAN, humidity = NAN;   // temperatura ya calibrada
+float tempC = NAN, humidity = NAN;   // SHT31, temperatura ya calibrada
 unsigned long lastGoodRead = 0;
 bool sensorOk = false;
+
+float extTemp = NAN;                 // temperatura externa recibida de HA
+unsigned long extLastMs = 0;
+bool extEver = false;
+
+// Temperatura con la que se regula: la externa si está elegida y llega, si no la del SHT31
+float ctrlTemp = NAN;
+bool ctrlOk = false;
+bool ctrlIsExternal = false;
 
 bool heatDemand = false;             // la calefacción pide calor (histéresis)
 unsigned long lastHeatSwitch = 0;
@@ -240,6 +271,10 @@ volatile bool zbAcsChanged = false;
 volatile bool zbAcsValue = false;
 volatile bool zbForceChanged = false;
 volatile bool zbForceValue = false;
+volatile bool zbExtTempChanged = false;
+volatile float zbExtTempValue = 0;
+volatile bool zbExtSelChanged = false;
+volatile bool zbExtSelValue = false;
 
 // ---------------- Persistencia ----------------
 void loadConfig() {
@@ -250,6 +285,7 @@ void loadConfig() {
   cfg.maxLimit    = prefs.getShort("max", SETPOINT_ABS_MAX);
   cfg.calibration = prefs.getChar("cal", 0);
   cfg.acsOn       = prefs.getBool("acs", false);
+  cfg.useExternal = prefs.getBool("ext", false);
   prefs.end();
   if (cfg.heatMode) cfg.acsOn = true;   // calefacción sin caldera no es un estado válido
 }
@@ -262,6 +298,7 @@ void saveConfig() {
   prefs.putShort("max", cfg.maxLimit);
   prefs.putChar("cal", cfg.calibration);
   prefs.putBool("acs", cfg.acsOn);
+  prefs.putBool("ext", cfg.useExternal);
   prefs.end();
   Serial.println("Configuración guardada");
 }
@@ -288,7 +325,7 @@ void setHeatDemand(bool on) {
   lastHeatSwitch = millis();
   heatSwitchedOnce = true;
   applyRelays();
-  Serial.printf("Calefacción %s (T=%.2f, consigna=%.2f)\n", on ? "ENCENDIDA" : "APAGADA", tempC, cfg.setpoint / 100.0f);
+  Serial.printf("Calefacción %s (T=%.2f, consigna=%.2f)\n", on ? "ENCENDIDA" : "APAGADA", ctrlTemp, cfg.setpoint / 100.0f);
 
   uint16_t running = on ? 0x0001 : 0x0000;
   uint8_t demand = on ? 100 : 0;
@@ -307,14 +344,14 @@ void regulate() {
     return;
   }
   // Apagado o sensor sin datos: corta al momento (sin esperar el ciclo mínimo)
-  if (!cfg.heatMode || !sensorOk) {
+  if (!cfg.heatMode || !ctrlOk) {
     setHeatDemand(false);
     return;
   }
   float sp = cfg.setpoint / 100.0f;
   bool want = heatDemand;
-  if (tempC <= sp - HYSTERESIS) want = true;
-  else if (tempC >= sp + HYSTERESIS) want = false;
+  if (ctrlTemp <= sp - HYSTERESIS) want = true;
+  else if (ctrlTemp >= sp + HYSTERESIS) want = false;
 
   if (want != heatDemand && heatSwitchedOnce && millis() - lastHeatSwitch < MIN_CYCLE_MS) return;
   setHeatDemand(want);
@@ -330,24 +367,45 @@ void readSensor() {
     if (!sensorOk) Serial.println("SHT31 OK");
     sensorOk = true;
 
-    int16_t local = (int16_t)lroundf(tempC * 100);
-    zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID, &local);
     zbSensor.setTemperature(tempC);
     zbSensor.setHumidity(humidity);
   } else if (sensorOk && millis() - lastGoodRead > SENSOR_FAIL_MS) {
     sensorOk = false;
-    Serial.println("Fallo del SHT31: calefacción apagada por seguridad");
+    Serial.println("Fallo del SHT31");
   } else if (!sensorOk) {
     Serial.println("SHT31 no responde");
+  }
+  updateControlTemp();   // también caduca la temperatura externa si deja de llegar
+}
+
+bool extValid() {
+  return extEver && millis() - extLastMs < EXT_TIMEOUT_MS;
+}
+
+// Elige la temperatura de control y la publica como temperatura del termostato
+void updateControlTemp() {
+  bool wasExt = ctrlIsExternal, wasOk = ctrlOk;
+  if (cfg.useExternal && extValid()) {
+    ctrlTemp = extTemp;
+    ctrlOk = true;
+    ctrlIsExternal = true;
+  } else {
+    ctrlTemp = tempC;
+    ctrlOk = sensorOk;
+    ctrlIsExternal = false;
+  }
+  if (cfg.useExternal && wasExt && !ctrlIsExternal) Serial.println("Temperatura externa sin datos: se usa el SHT31");
+  if (wasOk && !ctrlOk) Serial.println("Sin temperatura: calefacción apagada por seguridad");
+  if (ctrlOk) {
+    int16_t local = (int16_t)lroundf(ctrlTemp * 100);
+    zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID, &local);
   }
 }
 
 void reportAll() {
   if (!Zigbee.connected()) return;
-  if (sensorOk) {
-    zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID);
-    zbSensor.report();
-  }
+  if (ctrlOk) zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID);
+  if (sensorOk) zbSensor.report();
   zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID);
 }
 
@@ -363,6 +421,7 @@ void publishConfig() {
   zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID, &running);
   zbAcs.setState(cfg.acsOn);
   zbForce.setState(forced);
+  zbExtSelect.setState(cfg.useExternal);
 }
 
 // ---------------- Callbacks Zigbee (tarea Zigbee: no tocar la pila aquí) ----------------
@@ -388,6 +447,16 @@ void onThermostatAttr(uint16_t attr, int32_t value) {
 void onForceChange(bool state) {
   zbForceValue = state;
   zbForceChanged = true;
+}
+
+void onExtTemp(float value) {
+  zbExtTempValue = value;
+  zbExtTempChanged = true;
+}
+
+void onExtSelect(bool state) {
+  zbExtSelValue = state;
+  zbExtSelChanged = true;
 }
 
 void onAcsChange(bool state) {
@@ -502,6 +571,30 @@ void processZigbeeChanges() {
       markDirty();
     }
   }
+
+  if (zbExtTempChanged) {
+    zbExtTempChanged = false;
+    float v = zbExtTempValue;
+    if (v > -40 && v < 80) {
+      extTemp = v;
+      extLastMs = millis();
+      extEver = true;
+      Serial.printf("Temperatura externa: %.2f ºC\n", v);
+      updateControlTemp();
+      regulate();
+    }
+  }
+
+  if (zbExtSelChanged) {
+    zbExtSelChanged = false;
+    if (zbExtSelValue != cfg.useExternal) {
+      cfg.useExternal = zbExtSelValue;
+      Serial.printf("Sensor para regular: %s\n", cfg.useExternal ? "EXTERNO" : "SHT31");
+      updateControlTemp();
+      regulate();
+      markDirty();
+    }
+  }
 }
 
 // ---------------- Pantalla ----------------
@@ -533,6 +626,12 @@ void handleUi() {
       Serial.printf("Pantalla -> caldera %s\n", cfg.acsOn ? "ON" : "OFF");
       localConfigChanged();
       break;
+    case UI_TOGGLE_SOURCE:
+      cfg.useExternal = !cfg.useExternal;
+      Serial.printf("Pantalla -> sensor %s\n", cfg.useExternal ? "EXTERNO" : "SHT31");
+      updateControlTemp();
+      localConfigChanged();
+      break;
     default: break;
   }
 
@@ -540,9 +639,12 @@ void handleUi() {
   if (millis() - lastDraw < 100) return;
   lastDraw = millis();
   UiState s;
-  s.temp = tempC;
+  s.temp = ctrlTemp;
   s.hum = humidity;
-  s.sensorOk = sensorOk;
+  s.sensorOk = ctrlOk;
+  s.humOk = sensorOk;
+  s.extSelected = cfg.useExternal;
+  s.extActive = ctrlIsExternal;
   s.heatMode = cfg.heatMode;
   s.heating = heatDemand;
   s.setpoint = cfg.setpoint;
@@ -562,7 +664,7 @@ void updateLed(bool connected) {
     lastBlink = now;
     blinkOn = !blinkOn;
   }
-  if (!sensorOk && cfg.heatMode && !forced) rgbLedWrite(STATUS_LED, blinkOn ? 40 : 0, 0, 0);
+  if (!ctrlOk && cfg.heatMode && !forced) rgbLedWrite(STATUS_LED, blinkOn ? 40 : 0, 0, 0);
   else if (!connected)            rgbLedWrite(STATUS_LED, 0, 0, blinkOn ? 30 : 0);
   else if (heatDemand)            rgbLedWrite(STATUS_LED, 30, 8, 0);
   else                            rgbLedWrite(STATUS_LED, 0, 0, 0);
@@ -625,6 +727,18 @@ void setup() {
   zbForce.setManufacturerAndModel(MANUFACTURER, MODEL);
   zbForce.onPowerOutletChange(onForceChange);
 
+  zbExtTemp.setManufacturerAndModel(MANUFACTURER, MODEL);
+  zbExtTemp.addAnalogOutput();
+  zbExtTemp.setAnalogOutputApplication(ESP_ZB_ZCL_AO_TEMPERATURE_ZONE_TEMPERATURE_SETPOINT);
+  zbExtTemp.setAnalogOutputDescription("Temperatura externa");
+  zbExtTemp.setAnalogOutputResolution(0.1);
+  zbExtTemp.setAnalogOutputMinMax(-20, 60);
+  zbExtTemp.setUnitsCelsius();
+  zbExtTemp.onAnalogOutputChange(onExtTemp);
+
+  zbExtSelect.setManufacturerAndModel(MANUFACTURER, MODEL);
+  zbExtSelect.onPowerOutletChange(onExtSelect);
+
   zbSensor.setManufacturerAndModel(MANUFACTURER, MODEL);
   zbSensor.setMinMaxValue(-20, 60);
   zbSensor.setTolerance(0.2);
@@ -634,6 +748,8 @@ void setup() {
   Zigbee.addEndpoint(&zbAcs);
   Zigbee.addEndpoint(&zbSensor);
   Zigbee.addEndpoint(&zbForce);
+  Zigbee.addEndpoint(&zbExtTemp);
+  Zigbee.addEndpoint(&zbExtSelect);
 
   // End device con la radio siempre escuchando: responde al instante sin hacer de router
   Zigbee.setRxOnWhenIdle(true);
@@ -649,6 +765,7 @@ void setup() {
   zbSensor.setHumidityReporting(30, 300, 2);
 
   readSensor();
+  updateControlTemp();
   regulate();
 }
 

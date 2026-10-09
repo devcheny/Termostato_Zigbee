@@ -97,9 +97,12 @@ public:
 };
 
 struct UiState {
-  float   temp;        // ºC, ya calibrada
-  float   hum;         // %
-  bool    sensorOk;
+  float   temp;        // ºC con la que se regula
+  float   hum;         // % (SHT31)
+  bool    sensorOk;    // hay temperatura para regular
+  bool    humOk;       // el SHT31 responde
+  bool    extSelected; // elegido el sensor externo
+  bool    extActive;   // se está usando el externo (si no llega, se usa el SHT31)
   bool    heatMode;    // calefacción en modo Calor
   bool    heating;     // relé de calefacción activo
   int16_t setpoint;    // 0,01 ºC
@@ -109,7 +112,7 @@ struct UiState {
   bool    forced;      // calefacción forzada desde HA
 };
 
-enum UiAction { UI_NONE, UI_SP_DOWN, UI_SP_UP, UI_TOGGLE_HEAT, UI_TOGGLE_ACS };
+enum UiAction { UI_NONE, UI_SP_DOWN, UI_SP_UP, UI_TOGGLE_HEAT, UI_TOGGLE_ACS, UI_TOGGLE_SOURCE };
 
 namespace ui {
 
@@ -188,7 +191,7 @@ void drawTop(const UiState &s) {
   lcd.drawString(s.ota ? "Actualizando..." : (s.connected ? "Zigbee" : "Sin red"), 30, 19);
 
   char buf[16];
-  if (s.sensorOk) snprintf(buf, sizeof(buf), "Hum %.0f%%", s.hum);
+  if (s.humOk) snprintf(buf, sizeof(buf), "Hum %.0f%%", s.hum);
   else strcpy(buf, "Hum --");
   lcd.setTextDatum(textdatum_t::middle_right);
   lcd.setTextColor(C_TEXT);
@@ -199,8 +202,14 @@ void drawTemp(const UiState &s) {
   lcd.fillRect(R_TEMP.x, R_TEMP.y, R_TEMP.w, R_TEMP.h, C_BG);
   lcd.setFont(&fonts::DejaVu18);
   lcd.setTextDatum(textdatum_t::middle_center);
-  lcd.setTextColor(C_DIM);
-  lcd.drawString("Temperatura", 120, 60);
+  // Sensor con el que se regula (tocar esta zona lo cambia)
+  const char *src;
+  uint32_t srcColor = C_DIM;
+  if (!s.extSelected)      src = "Sensor interno";
+  else if (s.extActive)    src = "Sensor externo";
+  else                   { src = "Externo sin datos"; srcColor = C_ORANGE; }
+  lcd.setTextColor(srcColor);
+  lcd.drawString(src, 120, 60);
 
   char buf[12];
   if (s.sensorOk) snprintf(buf, sizeof(buf), "%.1f", s.temp);
@@ -310,10 +319,10 @@ void uiUpdate(const UiState &s) {
   auto t10 = [](float v) { return (int)lroundf(v * 10); };
 
   if (all || s.connected != prev.connected || s.ota != prev.ota ||
-      s.sensorOk != prev.sensorOk || (int)lroundf(s.hum) != (int)lroundf(prev.hum))
+      s.humOk != prev.humOk || (int)lroundf(s.hum) != (int)lroundf(prev.hum))
     drawTop(s);
   if (all || s.sensorOk != prev.sensorOk || t10(s.temp) != t10(prev.temp) || s.heatMode != prev.heatMode || s.heating != prev.heating ||
-      s.forced != prev.forced)
+      s.forced != prev.forced || s.extSelected != prev.extSelected || s.extActive != prev.extActive)
     drawTemp(s);
   if (all || s.setpoint != prev.setpoint || s.heatMode != prev.heatMode)
     drawSetpoint(s);
@@ -368,6 +377,7 @@ UiAction uiPoll() {
   else if (B_PLUS.hit(x, y)) a = UI_SP_UP;
   else if (B_HEAT.hit(x, y)) a = UI_TOGGLE_HEAT;
   else if (B_ACS.hit(x, y))  a = UI_TOGGLE_ACS;
+  else if (R_TEMP.hit(x, y)) a = UI_TOGGLE_SOURCE;
 
   if (a == UI_SP_DOWN || a == UI_SP_UP) {
     repeatAction = a;

@@ -10,6 +10,8 @@ En ZHA aparece un dispositivo **DIY Cheny Termostato** con:
 | `switch` | Caldera (y con ella el agua caliente). Apagarla apaga también la calefacción | 11 |
 | `sensor` ×2 | Temperatura y humedad del SHT31 | 12 |
 | `switch` | Calefacción forzada: enciende la calefacción sin mirar la temperatura (ver abajo) | 13 |
+| `number` | Temperatura externa: HA escribe aquí la de otro sensor (ver "Sensor externo") | 14 |
+| `switch` | Usar sensor externo para regular, en vez del SHT31 | 15 |
 | `update` | Firmware: avisa cuando hay versión nueva y la instala | 10 |
 
 ## Lógica de los relés
@@ -45,7 +47,7 @@ Pantalla de 3,5" 320×480 SPI con táctil resistivo (la que viene con lápiz).
 ```
 +------------------------------------------------+
 | ● Zigbee                              Hum 48%  |
-|   Temperatura   |        Consigna              |
+| Sensor interno  |        Consigna              |
 |                 |         20.5°                |
 |     21.4°       |   [   -   ]   [   +   ]      |
 |   Calentando    |                              |
@@ -56,6 +58,7 @@ Pantalla de 3,5" 320×480 SPI con táctil resistivo (la que viene con lápiz).
 - **− / +**: cambian la consigna de 0,5 en 0,5 °C. Si mantienes pulsado, repite.
 - **Radiadores**: cambia la calefacción entre Calor y Apagado (lo mismo que el modo en HA). Al encenderla se enciende también la caldera.
 - **Caldera**: enciende o apaga la caldera (agua caliente). Al apagarla se apaga también la calefacción.
+- **Zona de la temperatura**: al tocarla cambia entre el sensor interno (SHT31) y el externo. Encima de la temperatura pone cuál se usa: "Sensor interno", "Sensor externo" o "Externo sin datos" (en naranja: está elegido el externo, pero no llega y se regula con el SHT31).
 - Lo que cambies en la pantalla se ve en HA al momento, y al revés.
 - Tras 30 s sin tocarla baja el brillo (`DIM_AFTER_MS`, `BL_DIM`). El primer toque solo la enciende, no pulsa ningún botón.
 - Arriba: estado de la red Zigbee (verde = conectado, rojo = sin red, azul = actualizando firmware) y la humedad.
@@ -149,6 +152,8 @@ arduino-cli compile --upload -b "esp32:esp32:esp32c6:ZigbeeMode=ed,PartitionSche
    | climate | Calefacción | `climate.calefaccion` |
    | interruptor del endpoint 11 (caldera) | Caldera | `switch.caldera` |
    | interruptor del endpoint 13 (forzada) | Calefacción forzada | `switch.calefaccion_forzada` |
+   | number del endpoint 14 | Temperatura externa | `number.termostato_temperatura_externa` |
+   | interruptor del endpoint 15 | Usar sensor externo | `switch.termostato_sensor_externo` |
 
    Con ZHA el firmware no puede poner estos nombres, así que hay que hacerlo a mano una vez. Se conservan en todas las actualizaciones OTA. Solo se pierden si eliminas el dispositivo de ZHA, así que hazlo después del último reemparejado.
 
@@ -190,6 +195,43 @@ mode: single
 La caldera es un `switch` normal: `switch.turn_on` / `switch.turn_off` en el horario que quieras. Recuerda que apagarla apaga también la calefacción.
 
 Para un horario semanal editable desde la interfaz, sirve el **helper Horario** (`schedule`) de HA y una automatización que cambie la consigna cuando el horario pase a `on` / `off`.
+
+### Sensor externo (p. ej. SONOFF SNZB-02D)
+
+El termostato puede regular con la temperatura de otro sensor de la casa en vez de con el SHT31. Es útil si el termostato está en un sitio poco representativo (pasillo, cerca de la caldera…).
+
+**Por qué no se empareja directamente con el ESP32:** un dispositivo Zigbee solo puede estar en una red, la del coordinador de ZHA, y el ESP32 no es coordinador. Dentro de la misma red, el sensor podría enviar sus lecturas directamente al ESP32 (un *binding*), pero ZHA no permite crear ese binding desde su interfaz. Además, el SNZB-02D pasa casi todo el tiempo dormido y es difícil configurarlo. Por eso es HA quien le pasa la temperatura al termostato.
+
+1. Empareja el SNZB-02D en ZHA como cualquier sensor.
+2. Crea esta automatización. Cambia `sensor.snzb_02d_temperatura` por la entidad de tu sensor y `number.termostato_temperatura_externa` por la del termostato:
+
+   ```yaml
+   alias: Termostato - temperatura externa
+   description: Envía al termostato la temperatura del sensor externo
+   triggers:
+     - trigger: state
+       entity_id: sensor.snzb_02d_temperatura
+     - trigger: time_pattern
+       minutes: /10          # reenvío periódico aunque no cambie
+     - trigger: homeassistant
+       event: start
+   conditions:
+     - condition: template
+       value_template: "{{ states('sensor.snzb_02d_temperatura') | is_number }}"
+   actions:
+     - action: number.set_value
+       target:
+         entity_id: number.termostato_temperatura_externa
+       data:
+         value: "{{ states('sensor.snzb_02d_temperatura') | float | round(1) }}"
+   mode: queued
+   ```
+
+3. Activa el interruptor **Usar sensor externo**, o toca la temperatura en la pantalla.
+
+Seguridad: si pasa **1 hora** sin recibir la temperatura externa (HA caído, sensor sin pilas…), el termostato vuelve solo al SHT31. En la pantalla pone "Externo sin datos" y, en cuanto vuelve a llegar, regresa al externo. Si tampoco hay SHT31, no calienta. El tiempo se cambia en `EXT_TIMEOUT_MS`.
+
+La elección de sensor se guarda en el ESP32. La temperatura externa no: tras un reinicio usa el SHT31 hasta que HA la vuelve a enviar (como mucho 10 minutos). La humedad de la pantalla y la entidad de humedad siguen siendo las del SHT31. La calibración solo se aplica al SHT31; el sensor externo se calibra en su propio dispositivo de ZHA.
 
 ### Calibración y límites
 
