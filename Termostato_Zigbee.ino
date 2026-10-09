@@ -52,7 +52,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000007
+#define FW_VERSION      0x00000008
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -65,6 +65,12 @@
 #define OTA_HW_VERSION_FULL_ONLY 0x0002
 #define OTA_DELTA_SINCE 0x00000005   // primera versión que sabe aplicar parches (no cambiar)
 #define OTA_STALL_MS    (5UL * 60 * 1000)   // OTA sin datos este tiempo -> reinicia
+
+// Vuelta atrás: tras una OTA, la versión nueva solo se da por buena cuando lleva
+// APP_VALID_AFTER_MS conectada a Zigbee. Si se cuelga o reinicia antes, el bootloader
+// arranca la versión anterior; si no se conecta en APP_ROLLBACK_AFTER_MS, vuelve atrás.
+#define APP_VALID_AFTER_MS    (2UL * 60 * 1000)
+#define APP_ROLLBACK_AFTER_MS (15UL * 60 * 1000)
 
 // ---------------- Configuración ----------------
 #define MANUFACTURER  "DIY Cheny"
@@ -434,11 +440,8 @@ void publishConfig() {
   zbAcs.setBinaryOutput(cfg.acsOn);
   zbForce.setBinaryOutput(forced);
   zbExtSelect.setBinaryOutput(cfg.useExternal);
-  if (Zigbee.connected()) {
-    zbAcs.reportBinaryOutput();
-    zbForce.reportBinaryOutput();
-    zbExtSelect.reportBinaryOutput();
-  }
+  // Sin reportBinaryOutput(): en esta versión de la librería hace abortar la pila
+  // Zigbee. ZHA configura el reporting del atributo y se entera igualmente.
 }
 
 // ---------------- Callbacks Zigbee (tarea Zigbee: no tocar la pila aquí) ----------------
@@ -708,6 +711,35 @@ void checkButton() {
   }
 }
 
+// ---------------- Vuelta atrás tras OTA ----------------
+// Arduino da por buena la app nueva al arrancar; así la validación la hace checkAppValid()
+extern "C" bool verifyRollbackLater() {
+  return true;
+}
+
+void checkAppValid(bool connected) {
+  static bool done = false;
+  static unsigned long connectedSince = 0;
+  if (done) return;
+  esp_ota_img_states_t state;
+  if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) != ESP_OK || state != ESP_OTA_IMG_PENDING_VERIFY) {
+    done = true;   // no viene de una OTA (p. ej. cargada por USB) o ya validada
+    return;
+  }
+  unsigned long now = millis();
+  if (!connected) connectedSince = 0;
+  else if (!connectedSince) connectedSince = now ? now : 1;
+
+  if (connectedSince && now - connectedSince > APP_VALID_AFTER_MS) {
+    esp_ota_mark_app_valid_cancel_rollback();
+    Serial.printf("OTA: firmware 0x%08X validado\n", FW_VERSION);
+    done = true;
+  } else if (now > APP_ROLLBACK_AFTER_MS) {
+    Serial.println("OTA: el firmware nuevo no se conecta a Zigbee, volviendo a la versión anterior");
+    esp_ota_mark_app_invalid_rollback_and_reboot();
+  }
+}
+
 // ---------------- Main ----------------
 void setup() {
   // Relés apagados cuanto antes
@@ -811,6 +843,7 @@ void loop() {
   wasConnected = connected;
 
   processZigbeeChanges();
+  checkAppValid(connected);
 
   // OTA fallida o parada: la librería Zigbee no se recupera sin reiniciar
   if (deltaOtaNeedsRestart(OTA_STALL_MS)) {
@@ -824,7 +857,6 @@ void loop() {
     Serial.println("Calefacción forzada: tiempo agotado, se apaga");
     forced = false;
     zbForce.setBinaryOutput(false);   // HA ve el interruptor apagado
-    if (Zigbee.connected()) zbForce.reportBinaryOutput();
     regulate();
   }
 
