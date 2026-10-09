@@ -145,17 +145,9 @@ arduino-cli compile --upload -b "esp32:esp32:esp32c6:ZigbeeMode=ed,PartitionSche
 1. En HA: **Ajustes → Dispositivos y servicios → Zigbee Home Automation → Añadir dispositivo**.
 2. Alimenta el ESP32. El LED RGB parpadea en **azul** mientras busca red.
 3. Cuando se une, el LED se apaga y aparece **DIY Cheny Termostato**.
-4. Renombra las entidades: en el dispositivo, entra en cada entidad → engranaje → **Nombre** e **ID de entidad**. Por ejemplo:
+4. Los interruptores y la temperatura externa ya aparecen con su nombre: **Caldera**, **Calefacción forzada**, **Usar sensor externo** y **Temperatura externa**. Son salidas binarias y analógicas de Zigbee, y ZHA usa la descripción que les pone el firmware como nombre. El resto (climate, sensores de temperatura y humedad) llevan el nombre genérico de ZHA. Si quieres cambiar algún nombre o ID de entidad: entidad → engranaje. Se conservan en las actualizaciones OTA y solo se pierden si eliminas el dispositivo de ZHA.
 
-   | Entidad que crea ZHA | Nombre | ID de entidad |
-   |---|---|---|
-   | climate | Calefacción | `climate.calefaccion` |
-   | interruptor del endpoint 11 (caldera) | Caldera | `switch.caldera` |
-   | interruptor del endpoint 13 (forzada) | Calefacción forzada | `switch.calefaccion_forzada` |
-   | number del endpoint 14 | Temperatura externa | `number.termostato_temperatura_externa` |
-   | interruptor del endpoint 15 | Usar sensor externo | `switch.termostato_sensor_externo` |
-
-   Con ZHA el firmware no puede poner estos nombres, así que hay que hacerlo a mano una vez. Se conservan en todas las actualizaciones OTA. Solo se pierden si eliminas el dispositivo de ZHA, así que hazlo después del último reemparejado.
+   Si después de emparejar falta algún interruptor, recarga la integración ZHA: ZHA solo crea el switch cuando ya ha leído su descripción.
 
 **Volver a emparejar:** mantén pulsado **BOOT** 3 s. El LED se pone rojo, los relés se apagan, se borra la red Zigbee y se reinicia en modo emparejamiento. Hazlo también si lo quitas de ZHA.
 
@@ -203,7 +195,7 @@ El termostato puede regular con la temperatura de otro sensor de la casa en vez 
 **Por qué no se empareja directamente con el ESP32:** un dispositivo Zigbee solo puede estar en una red, la del coordinador de ZHA, y el ESP32 no es coordinador. Dentro de la misma red, el sensor podría enviar sus lecturas directamente al ESP32 (un *binding*), pero ZHA no permite crear ese binding desde su interfaz. Además, el SNZB-02D pasa casi todo el tiempo dormido y es difícil configurarlo. Por eso es HA quien le pasa la temperatura al termostato.
 
 1. Empareja el SNZB-02D en ZHA como cualquier sensor.
-2. Crea esta automatización. Cambia `sensor.snzb_02d_temperatura` por la entidad de tu sensor y `number.termostato_temperatura_externa` por la del termostato:
+2. Crea esta automatización. Cambia `sensor.snzb_02d_temperatura` por la entidad de tu sensor y `number.diy_cheny_termostato_temperatura_externa` por la del termostato:
 
    ```yaml
    alias: Termostato - temperatura externa
@@ -221,7 +213,7 @@ El termostato puede regular con la temperatura de otro sensor de la casa en vez 
    actions:
      - action: number.set_value
        target:
-         entity_id: number.termostato_temperatura_externa
+         entity_id: number.diy_cheny_termostato_temperatura_externa
        data:
          value: "{{ states('sensor.snzb_02d_temperatura') | float | round(1) }}"
    mode: queued

@@ -52,7 +52,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000006
+#define FW_VERSION      0x00000007
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -220,9 +220,11 @@ private:
 };
 
 ZigbeeHeatingThermostat zbThermostat(EP_THERMOSTAT);
-ZigbeePowerOutlet       zbAcs(EP_ACS);
+// Interruptores como salidas binarias (BinaryOutput): ZHA usa su descripción como
+// nombre del switch, así cada uno aparece ya con su nombre al emparejar.
+ZigbeeBinary            zbAcs(EP_ACS);
 ZigbeeTempSensor        zbSensor(EP_SENSOR);
-ZigbeePowerOutlet       zbForce(EP_FORCE);
+ZigbeeBinary            zbForce(EP_FORCE);
 
 // Salida analógica (ZHA la muestra como number) donde HA escribe la temperatura externa
 class ZigbeeExternalTemp : public ZigbeeAnalog {
@@ -236,7 +238,7 @@ public:
   }
 };
 ZigbeeExternalTemp      zbExtTemp(EP_EXT_TEMP);
-ZigbeePowerOutlet       zbExtSelect(EP_EXT_SELECT);
+ZigbeeBinary            zbExtSelect(EP_EXT_SELECT);
 
 // ---------------- Estado ----------------
 struct Config {
@@ -429,9 +431,14 @@ void publishConfig() {
   zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_CALIBRATION_ID, &cfg.calibration);
   uint16_t running = heatDemand ? 0x0001 : 0x0000;
   zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID, &running);
-  zbAcs.setState(cfg.acsOn);
-  zbForce.setState(forced);
-  zbExtSelect.setState(cfg.useExternal);
+  zbAcs.setBinaryOutput(cfg.acsOn);
+  zbForce.setBinaryOutput(forced);
+  zbExtSelect.setBinaryOutput(cfg.useExternal);
+  if (Zigbee.connected()) {
+    zbAcs.reportBinaryOutput();
+    zbForce.reportBinaryOutput();
+    zbExtSelect.reportBinaryOutput();
+  }
 }
 
 // ---------------- Callbacks Zigbee (tarea Zigbee: no tocar la pila aquí) ----------------
@@ -735,10 +742,14 @@ void setup() {
   zbThermostat.onOTAStateChange(onOtaState);
 
   zbAcs.setManufacturerAndModel(MANUFACTURER, MODEL);
-  zbAcs.onPowerOutletChange(onAcsChange);
+  zbAcs.addBinaryOutput();
+  zbAcs.setBinaryOutputDescription("Caldera");
+  zbAcs.onBinaryOutputChange(onAcsChange);
 
   zbForce.setManufacturerAndModel(MANUFACTURER, MODEL);
-  zbForce.onPowerOutletChange(onForceChange);
+  zbForce.addBinaryOutput();
+  zbForce.setBinaryOutputDescription("Calefacción forzada");
+  zbForce.onBinaryOutputChange(onForceChange);
 
   zbExtTemp.setManufacturerAndModel(MANUFACTURER, MODEL);
   zbExtTemp.addAnalogOutput();
@@ -750,7 +761,9 @@ void setup() {
   zbExtTemp.onAnalogOutputChange(onExtTemp);
 
   zbExtSelect.setManufacturerAndModel(MANUFACTURER, MODEL);
-  zbExtSelect.onPowerOutletChange(onExtSelect);
+  zbExtSelect.addBinaryOutput();
+  zbExtSelect.setBinaryOutputDescription("Usar sensor externo");
+  zbExtSelect.onBinaryOutputChange(onExtSelect);
 
   zbSensor.setManufacturerAndModel(MANUFACTURER, MODEL);
   zbSensor.setMinMaxValue(-20, 60);
@@ -810,7 +823,8 @@ void loop() {
   if (forced && now - forcedSince > FORCE_TIMEOUT_MS) {
     Serial.println("Calefacción forzada: tiempo agotado, se apaga");
     forced = false;
-    zbForce.setState(false);   // HA ve el interruptor apagado
+    zbForce.setBinaryOutput(false);   // HA ve el interruptor apagado
+    if (Zigbee.connected()) zbForce.reportBinaryOutput();
     regulate();
   }
 
