@@ -11,7 +11,7 @@ En ZHA aparece un dispositivo **DIY Cheny Termostato** con:
 | `sensor` ×2 | Temperatura y humedad del SHT31 | 12 |
 | `number` | Temperatura externa: HA escribe aquí la de otro sensor (ver "Sensor externo") | 14 |
 | `switch` | Usar sensor externo para regular, en vez del SHT31 | 15 |
-| `number` | Ciclo mínimo caldera: minutos mínimos entre encendido y apagado (0-30) | 16 |
+| `number` | Ciclo mínimo caldera: minutos mínimos entre encendido y apagado (0-30, admite décimas) | 16 |
 | `update` | Firmware: avisa cuando hay versión nueva y la instala | 10 |
 
 ## Lógica de los relés
@@ -35,7 +35,7 @@ Al encender, primero entra el relé de la caldera; al apagar, primero sale el de
 La regulación la hace el ESP32, no HA:
 
 - Enciende cuando la temperatura baja **0,3 °C** por debajo de la consigna y apaga cuando sube 0,3 °C por encima (`HYSTERESIS`).
-- Entre encendido y apagado pasan al menos **3 minutos**, para no hacer ciclos cortos en la caldera. Se cambia desde HA con **Ciclo mínimo caldera** (0 a 30 minutos; 0 para pruebas) y se guarda en el ESP32. Poner el modo en Apagado o apagar la caldera corta al momento.
+- Entre encendido y apagado pasan al menos **3 minutos**, para no hacer ciclos cortos en la caldera. Se cambia desde HA con **Ciclo mínimo caldera** (0 a 30 minutos, con décimas; 0 para pruebas) y se guarda en el ESP32. HA lo muestra como casilla para escribir el valor, no como deslizador. Poner el modo en Apagado o apagar la caldera corta al momento.
 - Si el SHT31 deja de responder durante 1 minuto, deja de calentar por seguridad. El LED parpadea en rojo. La caldera (agua caliente) no se ve afectada.
 - La configuración (modo, consigna, caldera, límites, calibración) se guarda en flash. Tras un corte de luz sigue funcionando igual aunque HA o la red Zigbee no estén.
 

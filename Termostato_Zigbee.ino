@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x0000000B
+#define FW_VERSION      0x0000000C
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -95,6 +95,7 @@
 #define HYSTERESIS        0.3f      // ºC por debajo / encima de la consigna
 #define MIN_CYCLE_DEFAULT 3         // minutos mínimos encendida/apagada (protege la caldera); se cambia desde HA
 #define MIN_CYCLE_MAX     30
+#define MIN_CYCLE_STEP    0.1f      // paso en HA: con más de 256 pasos HA muestra una casilla y no un deslizador
 #define READ_INTERVAL_MS  10000     // lectura del SHT31
 #define REPORT_INTERVAL_MS 60000    // envío periódico a ZHA aunque no cambie nada
 #define SENSOR_FAIL_MS    60000     // sin lecturas válidas este tiempo -> apaga la calefacción
@@ -410,7 +411,7 @@ private:
 };
 
 ZigbeeNumber zbExtTemp(EP_EXT_TEMP, "Temperatura externa", -20, 60, 0.1, 62);              // ºC
-ZigbeeNumber zbMinCycle(EP_MIN_CYCLE, "Ciclo mínimo caldera", 0, MIN_CYCLE_MAX, 1, 72);    // minutos
+ZigbeeNumber zbMinCycle(EP_MIN_CYCLE, "Ciclo mínimo caldera", 0, MIN_CYCLE_MAX, MIN_CYCLE_STEP, 72);    // minutos
 ZigbeeNamedSwitch       zbExtSelect(EP_EXT_SELECT, "Usar sensor externo");
 
 // ---------------- Estado ----------------
@@ -421,7 +422,7 @@ struct Config {
   int8_t  calibration;  // 0,1 ºC
   bool    acsOn;        // caldera (agua caliente) encendida
   bool    useExternal;  // regular con el sensor externo
-  uint8_t minCycle;     // minutos mínimos entre encendido y apagado de la calefacción
+  uint16_t minCycle;    // décimas de minuto mínimas entre encendido y apagado de la calefacción
 };
 Config cfg;
 
@@ -469,8 +470,9 @@ void loadConfig() {
   cfg.calibration = prefs.getChar("cal", 0);
   cfg.acsOn       = prefs.getBool("acs", false);
   cfg.useExternal = prefs.getBool("ext", false);
-  cfg.minCycle    = prefs.getUChar("cyc", MIN_CYCLE_DEFAULT);
-  if (cfg.minCycle > MIN_CYCLE_MAX) cfg.minCycle = MIN_CYCLE_DEFAULT;
+  // "cyc" (minutos enteros) es de versiones anteriores a 0x0C
+  cfg.minCycle    = prefs.getUShort("cyc10", prefs.getUChar("cyc", MIN_CYCLE_DEFAULT) * 10);
+  if (cfg.minCycle > MIN_CYCLE_MAX * 10) cfg.minCycle = MIN_CYCLE_DEFAULT * 10;
   prefs.end();
   if (cfg.heatMode) cfg.acsOn = true;   // calefacción sin caldera no es un estado válido
 }
@@ -484,7 +486,7 @@ void saveConfig() {
   prefs.putChar("cal", cfg.calibration);
   prefs.putBool("acs", cfg.acsOn);
   prefs.putBool("ext", cfg.useExternal);
-  prefs.putUChar("cyc", cfg.minCycle);
+  prefs.putUShort("cyc10", cfg.minCycle);
   prefs.end();
   Serial.println("Configuración guardada");
 }
@@ -534,7 +536,7 @@ void regulate() {
   if (ctrlTemp <= sp - HYSTERESIS) want = true;
   else if (ctrlTemp >= sp + HYSTERESIS) want = false;
 
-  if (want != heatDemand && heatSwitchedOnce && millis() - lastHeatSwitch < cfg.minCycle * 60000UL) return;
+  if (want != heatDemand && heatSwitchedOnce && millis() - lastHeatSwitch < cfg.minCycle * 6000UL) return;
   setHeatDemand(want);
 }
 
@@ -771,12 +773,12 @@ void processZigbeeChanges() {
 
   if (zbMinCycleChanged) {
     zbMinCycleChanged = false;
-    long v = lroundf(zbMinCycleValue);
+    long v = lroundf(zbMinCycleValue * 10);
     if (v < 0) v = 0;
-    if (v > MIN_CYCLE_MAX) v = MIN_CYCLE_MAX;
+    if (v > MIN_CYCLE_MAX * 10) v = MIN_CYCLE_MAX * 10;
     if (v != cfg.minCycle) {
       cfg.minCycle = v;
-      Serial.printf("Ciclo mínimo de la caldera: %u min\n", cfg.minCycle);
+      Serial.printf("Ciclo mínimo de la caldera: %.1f min\n", cfg.minCycle / 10.0f);
       regulate();   // con 0, aplica ya el cambio pendiente
       markDirty();
     }
@@ -993,7 +995,7 @@ void setup() {
   zbExtSelect.enableReports();
   zbExtTemp.enableReports();
   zbMinCycle.enableReports();
-  zbMinCycle.set(cfg.minCycle);   // valor guardado, para que HA lo vea
+  zbMinCycle.set(cfg.minCycle / 10.0f);   // valor guardado, para que HA lo vea
   publishConfig();
   zbSensor.setReporting(30, 300, 0.2);
   zbSensor.setHumidityReporting(30, 300, 2);
