@@ -1,8 +1,9 @@
 # Compila el firmware y publica la OTA para ZHA cada vez que sube FW_VERSION.
 #
 # Al hacer push a main lee FW_VERSION del .ino. Si ya hay una release "fw-XXXXXXXX"
-# con esa versión no hace nada; si no, compila, genera el .ota y el index.json y crea
-# la release. ZHA lee siempre el index.json de la última release:
+# con esa versión no hace nada; si no, compila, genera la imagen completa, parches
+# delta desde las versiones anteriores (las que saben aplicarlos) y el index.json, y
+# crea la release. ZHA lee siempre el index.json de la última release:
 #   https://github.com/<usuario>/<repo>/releases/latest/download/index.json
 name: Firmware OTA
 
@@ -59,10 +60,55 @@ jobs:
           arduino-cli lib install $LIBS
 
       - if: steps.ver.outputs.skip != 'true'
-        name: Compilar y generar OTA
-        run: >
-          python3 Termostato_Zigbee/make_ota.py --build
-          --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/${{ steps.ver.outputs.tag }}/"
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - if: steps.ver.outputs.skip != 'true'
+        name: Descargar versiones anteriores (para los parches delta)
+        run: |
+          pip install detools==0.53.0   # misma versión que lib/detools
+          mkdir -p prev
+          for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 10 --json tagName -q '.[].tagName'); do
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" -D prev -p 'Termostato_Zigbee_????????.ota' || true
+          done
+          ls -l prev
+
+      - if: steps.ver.outputs.skip != 'true'
+        name: Compilar y generar OTA (completa + parches)
+        run: |
+          shopt -s nullglob
+          python3 Termostato_Zigbee/make_ota.py --build \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/${{ steps.ver.outputs.tag }}/" \
+            --delta-from prev/*.ota
+
+      - if: steps.ver.outputs.skip != 'true'
+        name: Comprobar los parches con el código del ESP32
+        run: |
+          shopt -s nullglob
+          cd Termostato_Zigbee
+          gcc -O2 -Wall -I. tools/test_delta.c detools_build.c heatshrink_build.c -o /tmp/test_delta
+          full=$(ls ota/Termostato_Zigbee_????????.ota)
+          for delta in ota/*_desde_*.ota; do
+            old=${delta##*_desde_}
+            /tmp/test_delta "../prev/Termostato_Zigbee_$old" "$delta" "$full"
+          done
+
+      # Simula la siguiente versión (FW_VERSION + 1) y comprueba que su parche desde
+      # esta se genera y se aplica bien. No se publica nada de esta prueba.
+      - if: steps.ver.outputs.skip != 'true'
+        name: Autoprueba del sistema delta
+        run: |
+          mkdir -p /tmp/selftest
+          cp -r Termostato_Zigbee /tmp/selftest/
+          ino=/tmp/selftest/Termostato_Zigbee/Termostato_Zigbee.ino
+          v=$(grep -oP '^#define\s+FW_VERSION\s+0x\K[0-9A-Fa-f]{8}' "$ino")
+          next=$(printf '%08X' $((16#$v + 1)))
+          sed -i -E "s/^(#define\s+FW_VERSION\s+)0x[0-9A-Fa-f]{8}/\10x$next/" "$ino"
+          sed -i -E "s/^(#define\s+OTA_DELTA_SINCE\s+)0x[0-9A-Fa-f]{8}/\10x$v/" "$ino"
+          full=$(ls Termostato_Zigbee/ota/Termostato_Zigbee_????????.ota)
+          python3 /tmp/selftest/Termostato_Zigbee/make_ota.py --build --out /tmp/selftest/out --delta-from "$full"
+          /tmp/test_delta "$full" /tmp/selftest/out/*_desde_*.ota "/tmp/selftest/out/Termostato_Zigbee_$next.ota"
 
       - if: steps.ver.outputs.skip != 'true'
         name: Publicar release

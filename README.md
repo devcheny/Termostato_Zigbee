@@ -247,9 +247,21 @@ Las versiones nuevas se publican solas en GitHub y ZHA las ofrece en la entidad 
 
 ```
 cambias el sketch y subes FW_VERSION ─► git push ─► GitHub Actions compila y crea la release
-                                                     (fw-00000003: .ota + index.json)
+                                                     (fw-00000006: completa + parches + index.json)
 HA lee releases/latest/download/index.json ─► la entidad update ofrece la versión ─► Instalar
 ```
+
+### Actualizaciones delta (desde la versión 5)
+
+ZHA envía las imágenes en trozos de 50 bytes, así que la imagen completa (~800 KB) tarda entre 1 y 1,5 horas. Por eso, además de la imagen completa, cada release lleva **parches delta** con solo la diferencia respecto a cada una de las versiones anteriores. Para un cambio normal de código son unas decenas de KB, que se descargan en pocos minutos.
+
+- ZHA elige solo el parche que corresponde a la versión instalada. Si no hay ninguno (por ejemplo, desde una versión anterior a la 5), envía la imagen completa.
+- El ESP32 reconstruye la versión nueva a partir de la que tiene funcionando y del parche ([esp_delta_ota_ops.cpp](esp_delta_ota_ops.cpp), con [detools](lib/detools/README.md)). Antes de arrancar con ella comprueba su checksum y su SHA-256.
+- Si un parche falla (por ejemplo, porque la versión instalada se cargó por USB desde otra compilación y no es idéntica a la de GitHub), el ESP32 se reinicia y se presenta con `OTA_HW_VERSION_FULL_ONLY`. A partir de ahí ZHA solo le ofrece la imagen completa. En cuanto se actualiza, vuelve a aceptar parches.
+- Si una descarga se queda parada más de 5 minutos (`OTA_STALL_MS`), el ESP32 se reinicia para poder empezar de nuevo. La librería Zigbee no se recupera de una OTA a medias sin reiniciar.
+- Antes de publicar, GitHub Actions aplica cada parche con el mismo código C que usa el ESP32 y comprueba que el resultado es idéntico a la imagen completa. Además hace una prueba simulando la versión siguiente. Si algo no cuadra, no publica la release.
+
+**Para que los parches funcionen, la versión instalada tiene que ser exactamente la de GitHub.** Si cargas por USB una compilación tuya, el siguiente parche fallará y se instalará la imagen completa (más lenta, pero funciona). Para un termostato en otra casa, instala siempre versiones publicadas.
 
 ### 1. Repositorio en GitHub (una vez)
 
@@ -289,10 +301,23 @@ Si haces push sin subir `FW_VERSION`, el workflow no publica nada. Así puedes s
 
 1. ZHA lee el `index.json` como mucho **una vez cada 24 h**. Para que lo lea ya, reinicia HA o recarga la integración ZHA.
 2. El termostato pregunta por actualizaciones al conectarse y luego cada hora. Para no esperar, reinícialo (desenchufar y enchufar).
-3. La entidad **update** del dispositivo muestra la versión nueva. Pulsa **Instalar**. La descarga tarda entre 1 y 1,5 horas (ZHA envía la imagen en trozos de 50 bytes, unos 16.000 trozos) y mientras tanto el termostato sigue regulando con normalidad.
+3. La entidad **update** del dispositivo muestra la versión nueva. Pulsa **Instalar**. Con un parche delta tarda unos minutos; con la imagen completa, entre 1 y 1,5 horas. Mientras tanto el termostato sigue regulando con normalidad.
 4. Al terminar, el ESP32 se reinicia con el firmware nuevo y conserva la red y la configuración.
 
 ZHA comprueba el checksum del `.ota` antes de enviarlo. Si aun así la imagen llega mal, el ESP32 la descarta y sigue con la versión anterior.
+
+### Cargar por USB la versión publicada
+
+Para que una placa nueva o recién cargada por USB pueda recibir parches, cárgale la versión de GitHub y no una compilación local. Con la placa conectada (cambia `COM14`, `00000005` y la ruta de esptool):
+
+```
+curl -LO https://github.com/devcheny/Termostato_Zigbee/releases/download/fw-00000005/Termostato_Zigbee_00000005.ota
+python -c "import struct,sys; d=open(sys.argv[1],'rb').read(); h=struct.unpack_from('<H',d,6)[0]; n=struct.unpack_from('<I',d,h+2)[0]; open('app.bin','wb').write(d[h+6:h+6+n])" Termostato_Zigbee_00000005.ota
+esptool --chip esp32c6 -p COM14 erase_region 0xe000 0x2000
+esptool --chip esp32c6 -p COM14 write_flash 0x10000 app.bin
+```
+
+Borrar `otadata` (0xe000) hace que arranque desde la primera partición, donde se escribe la app. No se borra la red Zigbee ni la configuración. La placa tiene que haberse cargado antes al menos una vez con el esquema de particiones Zigbee.
 
 ### Alternativa sin GitHub (archivo local)
 
@@ -304,10 +329,10 @@ Para probar una versión sin publicarla:
           warning: I understand I can *destroy* my devices by enabling OTA updates from files. Some OTA updates can be mistakenly applied to the wrong device, breaking it. I am consciously using this at my own risk.
           path: /config/zigpy_ota
    ```
-2. Sube `FW_VERSION` y genera la OTA: en VS Code, **Tasks: Run Task → Arduino: generar OTA Zigbee**, o `python make_ota.py --build`.
+2. Sube `FW_VERSION` y genera la OTA: en VS Code, **Tasks: Run Task → Arduino: generar OTA Zigbee**, o `python make_ota.py --build`. En local solo se genera la imagen completa: los parches necesitan `detools`, que en Windows no se instala sin compilador de C.
 3. Copia `ota/Termostato_Zigbee_XXXXXXXX.ota` a `/config/zigpy_ota/` y sigue los pasos de "Instalarla".
 
-`make_ota.py` lee del sketch `FW_VERSION`, `OTA_MANUFACTURER`, `OTA_IMAGE_TYPE` y `OTA_HW_VERSION`. No cambies los tres últimos: el ESP32 solo acepta imágenes que coincidan con ellos, y ZHA solo ofrece la versión a dispositivos con ese mismo fabricante y tipo de imagen. El nombre (`MANUFACTURER`, `MODEL`) sí se puede cambiar sin afectar a la OTA.
+`make_ota.py` lee del sketch `FW_VERSION`, `OTA_MANUFACTURER`, `OTA_IMAGE_TYPE`, `OTA_HW_VERSION`, `OTA_HW_VERSION_FULL_ONLY` y `OTA_DELTA_SINCE`. Solo se toca `FW_VERSION`. No cambies `OTA_MANUFACTURER`, `OTA_IMAGE_TYPE` ni `OTA_HW_VERSION`: el ESP32 solo acepta imágenes que coincidan con ellos, y ZHA solo ofrece la versión a dispositivos con ese mismo fabricante y tipo de imagen. El nombre (`MANUFACTURER`, `MODEL`) sí se puede cambiar sin afectar a la OTA.
 
 ## Notas
 

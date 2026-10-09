@@ -48,13 +48,23 @@
 
 #include "Zigbee.h"
 #include "Pantalla.h"
+#include "esp_delta_ota_ops.h"
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000004
+#define FW_VERSION      0x00000005
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
+
+// OTA delta (esp_delta_ota_ops.cpp): GitHub publica, además de la imagen completa,
+// parches desde versiones anteriores, que se descargan en minutos en vez de horas.
+// Los parches solo se ofrecen a OTA_HW_VERSION; las imágenes completas, también a
+// OTA_HW_VERSION_FULL_ONLY. Si un parche falla, el termostato se presenta con
+// OTA_HW_VERSION_FULL_ONLY para recibir la imagen completa.
+#define OTA_HW_VERSION_FULL_ONLY 0x0002
+#define OTA_DELTA_SINCE 0x00000005   // primera versión que sabe aplicar parches (no cambiar)
+#define OTA_STALL_MS    (5UL * 60 * 1000)   // OTA sin datos este tiempo -> reinicia
 
 // ---------------- Configuración ----------------
 #define MANUFACTURER  "DIY Cheny"
@@ -718,7 +728,10 @@ void setup() {
   zbThermostat.setManufacturerAndModel(MANUFACTURER, MODEL);
   zbThermostat.onAttributeChange(onThermostatAttr);
   zbThermostat.onIdentify(onIdentify);
-  zbThermostat.addOTAClient(FW_VERSION, FW_VERSION + 1, OTA_HW_VERSION, OTA_MANUFACTURER, OTA_IMAGE_TYPE);
+  bool fullOnly = deltaOtaBegin(FW_VERSION);
+  if (fullOnly) Serial.println("OTA: un parche delta falló con esta versión, se pedirán imágenes completas");
+  zbThermostat.addOTAClient(FW_VERSION, FW_VERSION + 1, fullOnly ? OTA_HW_VERSION_FULL_ONLY : OTA_HW_VERSION,
+                            OTA_MANUFACTURER, OTA_IMAGE_TYPE);
   zbThermostat.onOTAStateChange(onOtaState);
 
   zbAcs.setManufacturerAndModel(MANUFACTURER, MODEL);
@@ -785,6 +798,14 @@ void loop() {
   wasConnected = connected;
 
   processZigbeeChanges();
+
+  // OTA fallida o parada: la librería Zigbee no se recupera sin reiniciar
+  if (deltaOtaNeedsRestart(OTA_STALL_MS)) {
+    Serial.println("OTA fallida o sin datos, reiniciando...");
+    saveConfig();
+    delay(1000);
+    ESP.restart();
+  }
 
   if (forced && now - forcedSince > FORCE_TIMEOUT_MS) {
     Serial.println("Calefacción forzada: tiempo agotado, se apaga");
