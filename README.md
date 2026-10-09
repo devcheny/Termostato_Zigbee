@@ -2,7 +2,7 @@
 
 Termostato para la caldera con un **ESP32-C6 Super Mini**, dos relés de 3,3 V, un sensor **SHT31** y una **pantalla táctil de 3,5"** para manejarlo también a mano. Se integra en Home Assistant por **Zigbee (ZHA)** y se actualiza **por Zigbee (OTA)**, sin cables.
 
-En ZHA aparece un dispositivo **DIY Termostato** con:
+En ZHA aparece un dispositivo **DIY Cheny Termostato** con:
 
 | Entidad | Qué hace | Endpoint |
 |---------|----------|----------|
@@ -130,7 +130,7 @@ arduino-cli compile --upload -b "esp32:esp32:esp32c6:ZigbeeMode=ed,PartitionSche
 
 1. En HA: **Ajustes → Dispositivos y servicios → Zigbee Home Automation → Añadir dispositivo**.
 2. Alimenta el ESP32. El LED RGB parpadea en **azul** mientras busca red.
-3. Cuando se une, el LED se apaga y aparece **DIY Termostato**. Renombra las entidades (p. ej. "Calefacción" y "Agua caliente").
+3. Cuando se une, el LED se apaga y aparece **DIY Cheny Termostato**. Renombra las entidades (p. ej. "Calefacción" y "Agua caliente").
 
 **Volver a emparejar:** mantén pulsado **BOOT** 3 s. El LED se pone rojo, los relés se apagan, se borra la red Zigbee y se reinicia en modo emparejamiento. Hazlo también si lo quitas de ZHA.
 
@@ -161,7 +161,7 @@ conditions:
 actions:
   - action: climate.set_temperature
     target:
-      entity_id: climate.diy_termostato_termostato   # cámbialo por el tuyo
+      entity_id: climate.diy_cheny_termostato_termostato   # cámbialo por el tuyo
     data:
       temperature: "{{ 21 if trigger.id == 'dia' else 17 }}"
 mode: single
@@ -194,9 +194,8 @@ HA lee releases/latest/download/index.json ─► la entidad update ofrece la ve
 El repositorio tiene que ser **público**: ZHA descarga el `index.json` y el `.ota` sin usuario ni token, y de un repositorio privado no puede. El firmware no lleva contraseñas ni claves (la clave de la red Zigbee se negocia al emparejar).
 
 1. Crea en GitHub un repositorio público vacío llamado `Termostato_Zigbee`.
-2. Sube esta carpeta (ya es un repositorio git con la rama `main`):
+2. Sube esta carpeta (ya es un repositorio git con la rama `main` y el remoto `origin` configurado):
    ```
-   git remote add origin https://github.com/<usuario>/Termostato_Zigbee.git
    git push -u origin main
    ```
 3. En la pestaña **Actions** verás el workflow **Firmware OTA**. La primera vez tarda unos minutos porque descarga el core esp32; después usa la caché.
@@ -211,7 +210,7 @@ zha:
     ota:
       extra_providers:
         - type: zigpy_remote
-          url: https://github.com/<usuario>/Termostato_Zigbee/releases/latest/download/index.json
+          url: https://github.com/devcheny/Termostato_Zigbee/releases/latest/download/index.json
 ```
 
 Reinicia HA.
@@ -246,7 +245,7 @@ Para probar una versión sin publicarla:
 2. Sube `FW_VERSION` y genera la OTA: en VS Code, **Tasks: Run Task → Arduino: generar OTA Zigbee**, o `python make_ota.py --build`.
 3. Copia `ota/Termostato_Zigbee_XXXXXXXX.ota` a `/config/zigpy_ota/` y sigue los pasos de "Instalarla".
 
-`make_ota.py` lee del sketch `FW_VERSION`, `OTA_MANUFACTURER`, `OTA_IMAGE_TYPE`, `OTA_HW_VERSION`, `MANUFACTURER` y `MODEL`. No cambies los cinco últimos: el ESP32 solo acepta imágenes que coincidan con su fabricante, tipo y hardware, y ZHA solo ofrece la versión al dispositivo "DIY Termostato".
+`make_ota.py` lee del sketch `FW_VERSION`, `OTA_MANUFACTURER`, `OTA_IMAGE_TYPE` y `OTA_HW_VERSION`. No cambies los tres últimos: el ESP32 solo acepta imágenes que coincidan con ellos, y ZHA solo ofrece la versión a dispositivos con ese mismo fabricante y tipo de imagen. El nombre (`MANUFACTURER`, `MODEL`) sí se puede cambiar sin afectar a la OTA.
 
 ## Notas
 

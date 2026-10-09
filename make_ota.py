@@ -1,7 +1,6 @@
 """Genera la imagen OTA Zigbee (.ota) para ZHA a partir del .bin compilado.
 
-Lee FW_VERSION, OTA_MANUFACTURER, OTA_IMAGE_TYPE, OTA_HW_VERSION, MANUFACTURER y
-MODEL del .ino, así que solo hay que subir FW_VERSION en el sketch antes de compilar.
+Lee FW_VERSION, OTA_MANUFACTURER, OTA_IMAGE_TYPE y OTA_HW_VERSION del .ino, así que solo hay que subir FW_VERSION en el sketch antes de compilar.
 
 Uso:
   python make_ota.py --build                      compila con arduino-cli y genera la OTA
@@ -37,12 +36,11 @@ def build():
     return out / (HERE.name + ".ino.bin")
 
 
-def define(src, name, string=False):
-    value = r'"([^"]*)"' if string else r"(0x[0-9A-Fa-f]+|\d+)"
-    m = re.search(r"^\s*#define\s+" + name + r"\s+" + value, src, re.M)
+def define(src, name):
+    m = re.search(r"^\s*#define\s+" + name + r"\s+(0x[0-9A-Fa-f]+|\d+)", src, re.M)
     if not m:
         sys.exit(f"No encuentro #define {name} en {INO.name}")
-    return m.group(1) if string else int(m.group(1), 0)
+    return int(m.group(1), 0)
 
 
 def main():
@@ -93,7 +91,10 @@ def main():
     print(f"  {len(image)} bytes")
 
     if args.base_url:
-        # Formato del proveedor zigpy_remote (el checksum tiene que ser sha3-256)
+        # Formato del proveedor zigpy_remote (el checksum tiene que ser sha3-256).
+        # Sin manufacturer_names / model_names: ZHA guarda el nombre al emparejar y, si
+        # se renombra el dispositivo, dejaría de ofrecerle la OTA. El fabricante, el tipo
+        # de imagen y la versión de hardware ya la limitan a este termostato.
         index = {
             "firmwares": [{
                 "binary_url": args.base_url.rstrip("/") + "/" + name,
@@ -101,8 +102,6 @@ def main():
                 "file_size": len(image),
                 "image_type": image_type,
                 "manufacturer_id": manuf,
-                "manufacturer_names": [define(src, "MANUFACTURER", string=True)],
-                "model_names": [define(src, "MODEL", string=True)],
                 "checksum": "sha3-256:" + hashlib.sha3_256(image).hexdigest(),
                 "min_hardware_version": hw,
                 "max_hardware_version": hw,

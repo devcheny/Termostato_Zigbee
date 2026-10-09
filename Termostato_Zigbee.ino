@@ -19,7 +19,7 @@
  *     caldera, así que mientras la calefacción pide calor el relé CALDERA
  *     también se enciende, aunque el agua caliente esté apagada.
  *
- * En ZHA aparece "DIY Termostato" con:
+ * En ZHA aparece "DIY Cheny Termostato" con:
  *   - climate: calefacción (Apagado / Calor, consigna, temperatura actual).
  *   - switch:  agua caliente.
  *   - sensor:  temperatura y humedad del SHT31.
@@ -45,13 +45,13 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000002
+#define FW_VERSION      0x00000003
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
 
 // ---------------- Configuración ----------------
-#define MANUFACTURER  "DIY"
+#define MANUFACTURER  "DIY Cheny"
 #define MODEL         "Termostato"
 
 #define RELAY_CALDERA_PIN  18   // caldera / agua caliente sanitaria
