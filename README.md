@@ -144,7 +144,7 @@ arduino-cli compile --upload -b "esp32:esp32:esp32c6:ZigbeeMode=ed,PartitionSche
 1. En HA: **Ajustes → Dispositivos y servicios → Zigbee Home Automation → Añadir dispositivo**.
 2. Alimenta el ESP32. El LED RGB parpadea en **azul** mientras busca red.
 3. Cuando se une, el LED se apaga y aparece **DIY Cheny Termostato**.
-4. Los interruptores y la temperatura externa ya aparecen con su nombre: **Caldera**, **Usar sensor externo**, **Temperatura externa** y **Ciclo mínimo caldera**. Son salidas binarias y analógicas de Zigbee, y ZHA usa la descripción que les pone el firmware como nombre. El resto (climate, sensores de temperatura y humedad) llevan el nombre genérico de ZHA. Si quieres cambiar algún nombre o ID de entidad: entidad → engranaje. Se conservan en las actualizaciones OTA y solo se pierden si eliminas el dispositivo de ZHA.
+4. Los interruptores **Caldera** y **Usar sensor externo** ya aparecen con su nombre: son salidas binarias de Zigbee y ZHA usa como nombre la descripción que les pone el firmware. Los dos `number` (endpoints 14 y 16) aparecen **sin nombre**, porque ZHA no llega a leer su descripción. Pónselo a mano una vez (entidad → engranaje → Nombre): el del endpoint 14 es **Temperatura externa** (°C, de -20 a 60) y el del 16 **Ciclo mínimo caldera** (min, de 0 a 30). Las unidades y el rango los envía el propio termostato. El resto (climate, sensores de temperatura y humedad) llevan el nombre genérico de ZHA. Si quieres cambiar algún nombre o ID de entidad: entidad → engranaje. Se conservan en las actualizaciones OTA y solo se pierden si eliminas el dispositivo de ZHA.
 
    Si después de emparejar falta algún interruptor, recarga la integración ZHA: ZHA solo crea el switch cuando ya ha leído su descripción.
 

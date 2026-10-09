@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000009
+#define FW_VERSION      0x0000000A
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -336,9 +336,10 @@ private:
 ZigbeeNamedSwitch       zbAcs(EP_ACS, "Caldera");
 ZigbeeTempSensor        zbSensor(EP_SENSOR);
 
-// Salidas analógicas (ZHA las muestra como number y usa la descripción como nombre).
-// ZHA no consigue leer de golpe todos sus atributos al emparejar (la respuesta no le
-// llega), así que el termostato le envía nombre, rango, paso y unidades como informes.
+// Salidas analógicas (ZHA las muestra como number). ZHA no consigue leer sus atributos
+// al emparejar, así que el termostato le envía rango, paso y unidades como informes.
+// El nombre (descripción) no se puede enviar así y ZHA tampoco lo lee: hay que ponerlo
+// a mano en HA (ver README).
 class ZigbeeNumber : public ZigbeeReportingEP {
 public:
   ZigbeeNumber(uint8_t endpoint, const char *name, float minValue, float maxValue, float step, uint16_t units)
@@ -389,11 +390,7 @@ public:
 
   // Envía a ZHA nombre, rango, paso y unidades (al conectarse)
   void reportCapabilities() {
-    for (uint16_t id : CAPABILITY_ATTRS) {
-      Serial.printf("PRUEBA: informe ep %u attr 0x%04x\n", _endpoint, id);
-      delay(50);
-      reportAttr(ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT, id);
-    }
+    for (uint16_t id : CAPABILITY_ATTRS) reportAttr(ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT, id);
   }
 
 private:
@@ -401,8 +398,7 @@ private:
     ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_MIN_PRESENT_VALUE_ID, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_MAX_PRESENT_VALUE_ID,
     ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_RESOLUTION_ID, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_ENGINEERING_UNITS_ID,
     // La descripción (texto) no: el SDK aborta al informar de cadenas, igual que con
-    // valores booleanos. ZHA la lee al emparejar; con lo demás ya en su caché, la
-    // lectura es pequeña y le llega bien.
+    // valores booleanos (probado).
   };
   void (*_cb)(float) = nullptr;
 
