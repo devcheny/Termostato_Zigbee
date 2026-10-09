@@ -336,18 +336,85 @@ private:
 ZigbeeNamedSwitch       zbAcs(EP_ACS, "Caldera");
 ZigbeeTempSensor        zbSensor(EP_SENSOR);
 
-// Salidas analógicas (ZHA las muestra como number con la descripción como nombre)
-class ZigbeeNumber : public ZigbeeAnalog {
+// Salidas analógicas (ZHA las muestra como number y usa la descripción como nombre).
+// ZHA no consigue leer de golpe todos sus atributos al emparejar (la respuesta no le
+// llega), así que el termostato le envía nombre, rango, paso y unidades como informes.
+class ZigbeeNumber : public ZigbeeReportingEP {
 public:
-  ZigbeeNumber(uint8_t endpoint) : ZigbeeAnalog(endpoint) {}
-  bool setUnits(uint16_t units) {   // BACnet engineering units: 62 = ºC, 72 = minutos
-    esp_zb_attribute_list_t *ao =
-      esp_zb_cluster_list_get_cluster(_cluster_list, ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    return ao && esp_zb_analog_output_cluster_add_attr(ao, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_ENGINEERING_UNITS_ID, &units) == ESP_OK;
+  ZigbeeNumber(uint8_t endpoint, const char *name, float minValue, float maxValue, float step, uint16_t units)
+    : ZigbeeReportingEP(endpoint) {
+    _device_id = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID;
+    const uint16_t AO = ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT;
+    const uint8_t R = ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY, RW = ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, REP = ESP_ZB_ZCL_ATTR_ACCESS_REPORTING;
+    float value = minValue > 0 ? minValue : 0;
+    bool outOfService = false;
+    uint8_t statusFlags = 0;
+    char desc[ZB_MAX_NAME_LENGTH + 2];   // cadena ZCL: longitud + texto
+    size_t len = strnlen(name, ZB_MAX_NAME_LENGTH);
+    desc[0] = (char)len;
+    memcpy(desc + 1, name, len);
+    desc[len + 1] = 0;
+
+    esp_zb_attribute_list_t *ao = esp_zb_zcl_attr_list_create(AO);
+    addAttr(ao, AO, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_PRESENT_VALUE_ID, ESP_ZB_ZCL_ATTR_TYPE_SINGLE, RW | REP, &value);
+    addAttr(ao, AO, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_MIN_PRESENT_VALUE_ID, ESP_ZB_ZCL_ATTR_TYPE_SINGLE, R | REP, &minValue);
+    addAttr(ao, AO, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_MAX_PRESENT_VALUE_ID, ESP_ZB_ZCL_ATTR_TYPE_SINGLE, R | REP, &maxValue);
+    addAttr(ao, AO, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_RESOLUTION_ID, ESP_ZB_ZCL_ATTR_TYPE_SINGLE, R | REP, &step);
+    addAttr(ao, AO, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_DESCRIPTION_ID, ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING, R | REP, desc);
+    addAttr(ao, AO, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_ENGINEERING_UNITS_ID, ESP_ZB_ZCL_ATTR_TYPE_16BIT_ENUM, R | REP, &units);
+    addAttr(ao, AO, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_OUT_OF_SERVICE_ID, ESP_ZB_ZCL_ATTR_TYPE_BOOL, RW, &outOfService);
+    addAttr(ao, AO, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_STATUS_FLAGS_ID, ESP_ZB_ZCL_ATTR_TYPE_8BITMAP, R, &statusFlags);
+
+    _cluster_list = newClusterList();
+    esp_zb_cluster_list_add_analog_output_cluster(_cluster_list, ao, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    _ep_config = {
+      .endpoint = _endpoint, .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID, .app_device_id = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID, .app_device_version = 0
+    };
+  }
+
+  // Se llama desde la tarea Zigbee cuando HA cambia el valor
+  void onChange(void (*callback)(float)) { _cb = callback; }
+
+  bool set(float value) {
+    return setClusterAttribute(ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                               ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_PRESENT_VALUE_ID, &value, false) == ESP_ZB_ZCL_STATUS_SUCCESS;
+  }
+
+  // Llamar tras Zigbee.begin(), antes de informar de nada
+  void enableReports() {
+    const uint16_t AO = ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT;
+    for (uint16_t id : CAPABILITY_ATTRS) enableReporting(AO, id, 0, 3600);
+    enableReporting(AO, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_PRESENT_VALUE_ID, 0, 900);
+  }
+
+  // Envía a ZHA nombre, rango, paso y unidades (al conectarse)
+  void reportCapabilities() {
+    for (uint16_t id : CAPABILITY_ATTRS) {
+      Serial.printf("PRUEBA: informe ep %u attr 0x%04x\n", _endpoint, id);
+      delay(50);
+      reportAttr(ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT, id);
+    }
+  }
+
+private:
+  static constexpr uint16_t CAPABILITY_ATTRS[] = {
+    ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_MIN_PRESENT_VALUE_ID, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_MAX_PRESENT_VALUE_ID,
+    ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_RESOLUTION_ID, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_ENGINEERING_UNITS_ID,
+    // La descripción (texto) no: el SDK aborta al informar de cadenas, igual que con
+    // valores booleanos. ZHA la lee al emparejar; con lo demás ya en su caché, la
+    // lectura es pequeña y le llega bien.
+  };
+  void (*_cb)(float) = nullptr;
+
+  void zbAttributeSet(const esp_zb_zcl_set_attr_value_message_t *message) override {
+    if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT && message->attribute.id == ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_PRESENT_VALUE_ID &&
+        message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_SINGLE && message->attribute.data.value && _cb)
+      _cb(*(float *)message->attribute.data.value);
   }
 };
-ZigbeeNumber            zbExtTemp(EP_EXT_TEMP);   // HA escribe aquí la temperatura externa
-ZigbeeNumber            zbMinCycle(EP_MIN_CYCLE);  // ciclo mínimo de la caldera (minutos)
+
+ZigbeeNumber zbExtTemp(EP_EXT_TEMP, "Temperatura externa", -20, 60, 0.1, 62);              // ºC
+ZigbeeNumber zbMinCycle(EP_MIN_CYCLE, "Ciclo mínimo caldera", 0, MIN_CYCLE_MAX, 1, 72);    // minutos
 ZigbeeNamedSwitch       zbExtSelect(EP_EXT_SELECT, "Usar sensor externo");
 
 // ---------------- Estado ----------------
@@ -880,21 +947,10 @@ void setup() {
 
 
   zbExtTemp.setManufacturerAndModel(MANUFACTURER, MODEL);
-  zbExtTemp.addAnalogOutput();
-  zbExtTemp.setAnalogOutputApplication(ESP_ZB_ZCL_AO_TEMPERATURE_ZONE_TEMPERATURE_SETPOINT);
-  zbExtTemp.setAnalogOutputDescription("Temperatura externa");
-  zbExtTemp.setAnalogOutputResolution(0.1);
-  zbExtTemp.setAnalogOutputMinMax(-20, 60);
-  zbExtTemp.setUnits(62);
-  zbExtTemp.onAnalogOutputChange(onExtTemp);
+  zbExtTemp.onChange(onExtTemp);
 
   zbMinCycle.setManufacturerAndModel(MANUFACTURER, MODEL);
-  zbMinCycle.addAnalogOutput();
-  zbMinCycle.setAnalogOutputDescription("Ciclo mínimo caldera");
-  zbMinCycle.setAnalogOutputResolution(1);
-  zbMinCycle.setAnalogOutputMinMax(0, MIN_CYCLE_MAX);
-  zbMinCycle.setUnits(72);
-  zbMinCycle.onAnalogOutputChange(onMinCycle);
+  zbMinCycle.onChange(onMinCycle);
 
   zbExtSelect.setManufacturerAndModel(MANUFACTURER, MODEL);
   zbExtSelect.onChange(onExtSelect);
@@ -923,7 +979,9 @@ void setup() {
   zbThermostat.enableReports();
   zbAcs.enableReports();
   zbExtSelect.enableReports();
-  zbMinCycle.setAnalogOutput(cfg.minCycle);   // valor guardado, para que HA lo vea
+  zbExtTemp.enableReports();
+  zbMinCycle.enableReports();
+  zbMinCycle.set(cfg.minCycle);   // valor guardado, para que HA lo vea
   publishConfig();
   zbSensor.setReporting(30, 300, 0.2);
   zbSensor.setHumidityReporting(30, 300, 2);
@@ -944,6 +1002,8 @@ void loop() {
     reportAll();
     zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID);
     zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID);
+    zbExtTemp.reportCapabilities();
+    zbMinCycle.reportCapabilities();
     zbThermostat.requestOTAUpdate();   // primera consulta en ~1 min, luego cada hora
   }
   wasConnected = connected;
