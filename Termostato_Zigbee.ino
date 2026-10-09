@@ -788,8 +788,7 @@ void loop() {
 
   if (connected && !wasConnected) {
     // Recién conectado: informar a ZHA del estado real y buscar actualizaciones
-    Serial.printf("Conectado a la red Zigbee (firmware 0x%08X)
-", FW_VERSION);
+    Serial.printf("Conectado a la red Zigbee (firmware 0x%08X)\n", FW_VERSION);
     publishConfig();
     reportAll();
     zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID);
