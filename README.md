@@ -144,7 +144,28 @@ arduino-cli compile --upload -b "esp32:esp32:esp32c6:ZigbeeMode=ed,PartitionSche
 1. En HA: **Ajustes → Dispositivos y servicios → Zigbee Home Automation → Añadir dispositivo**.
 2. Alimenta el ESP32. El LED RGB parpadea en **azul** mientras busca red.
 3. Cuando se une, el LED se apaga y aparece **DIY Cheny Termostato**.
-4. Los interruptores **Caldera** y **Usar sensor externo** ya aparecen con su nombre: son salidas binarias de Zigbee y ZHA usa como nombre la descripción que les pone el firmware. Los dos `number` (endpoints 14 y 16) aparecen **sin nombre**, porque ZHA no llega a leer su descripción. Pónselo a mano una vez (entidad → engranaje → Nombre): el del endpoint 14 es **Temperatura externa** (°C, de -20 a 60) y el del 16 **Ciclo mínimo caldera** (min, de 0 a 30). Las unidades y el rango los envía el propio termostato. El resto (climate, sensores de temperatura y humedad) llevan el nombre genérico de ZHA. Si quieres cambiar algún nombre o ID de entidad: entidad → engranaje. Se conservan en las actualizaciones OTA y solo se pierden si eliminas el dispositivo de ZHA.
+4. Instala el quirk de ZHA (una vez, ver abajo). Con él aparecen ya con su nombre el selector **Sensor de temperatura** (Integrado / Externo) y los números **Temperatura externa** y **Ciclo mínimo caldera**. El interruptor **Caldera** sale con su nombre sin necesidad del quirk.
+
+### Quirk de ZHA
+
+ZHA no crea selectores para dispositivos genéricos y no consigue leer el nombre de las salidas analógicas del termostato. El quirk [ha/custom_zha_quirks/diy_cheny_termostato.py](ha/custom_zha_quirks/diy_cheny_termostato.py) le describe esas entidades:
+
+| Endpoint | Sin quirk | Con quirk |
+|---|---|---|
+| 15 | switch "Usar sensor externo" | select **Sensor de temperatura**: Integrado / Externo |
+| 14 | number sin nombre | number **Temperatura externa** (°C, -20 a 60) |
+| 16 | number sin nombre | number **Ciclo mínimo caldera** (min, 0 a 30), en Configuración |
+
+Instalación:
+1. Copia el archivo a `/config/custom_zha_quirks/` en Home Assistant.
+2. En `configuration.yaml`:
+   ```yaml
+   zha:
+     custom_quirks_path: /config/custom_zha_quirks/
+   ```
+3. Reinicia Home Assistant. Las entidades antiguas de esos endpoints quedan como no disponibles; bórralas.
+
+El quirk solo cambia cómo muestra ZHA el dispositivo: el firmware es el mismo y funciona igual sin él.
 
    Si después de emparejar falta algún interruptor, recarga la integración ZHA: ZHA solo crea el switch cuando ya ha leído su descripción.
 
@@ -218,7 +239,7 @@ El termostato puede regular con la temperatura de otro sensor de la casa en vez 
    mode: queued
    ```
 
-3. Activa el interruptor **Usar sensor externo**, o toca la temperatura en la pantalla.
+3. Pon **Sensor de temperatura** en **Externo** (o activa **Usar sensor externo** si no usas el quirk), o toca la temperatura en la pantalla.
 
 **Para hacer pruebas** sin SHT31 ni sensor externo: activa **Usar sensor externo** y escribe a mano la temperatura que quieras simular en **Temperatura externa**. El termostato regula con ese valor (durante 1 hora como máximo, ver abajo).
 
