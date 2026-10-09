@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x0000000A
+#define FW_VERSION      0x0000000B
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -905,6 +905,22 @@ void checkAppValid(bool connected) {
   }
 }
 
+// Motivo del último reinicio, para diagnosticar desde el monitor serie
+const char *resetReasonText() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:  return "encendido";
+    case ESP_RST_EXT:      return "pin de reset";
+    case ESP_RST_SW:       return "reinicio por software (OTA, red Zigbee o código)";
+    case ESP_RST_PANIC:    return "cuelgue (panic)";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:      return "vigilante (watchdog)";
+    case ESP_RST_BROWNOUT: return "caída de tensión";
+    case ESP_RST_USB:      return "USB";
+    default:               return "otro";
+  }
+}
+
 // ---------------- Main ----------------
 void setup() {
   // Relés apagados cuanto antes
@@ -916,7 +932,7 @@ void setup() {
   Serial.begin(115200);
   rgbLedWrite(STATUS_LED, 0, 0, 0);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
-  Serial.printf("Termostato Zigbee, firmware 0x%08X\n", FW_VERSION);
+  Serial.printf("Termostato Zigbee, firmware 0x%08X (reinicio: %s)\n", FW_VERSION, resetReasonText());
 
   Wire.begin(SHT_SDA_PIN, SHT_SCL_PIN);
   if (shtBegin()) Serial.printf("SHT31 en 0x%02X\n", shtAddr);
