@@ -52,7 +52,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000005
+#define FW_VERSION      0x00000006
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -788,7 +788,8 @@ void loop() {
 
   if (connected && !wasConnected) {
     // Recién conectado: informar a ZHA del estado real y buscar actualizaciones
-    Serial.println("Conectado a la red Zigbee");
+    Serial.printf("Conectado a la red Zigbee (firmware 0x%08X)
+", FW_VERSION);
     publishConfig();
     reportAll();
     zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID);
