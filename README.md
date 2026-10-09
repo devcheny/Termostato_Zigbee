@@ -9,9 +9,9 @@ En ZHA aparece un dispositivo **DIY Cheny Termostato** con:
 | `climate` | Calefacción: modo Apagado / Calor, consigna y temperatura actual. Muestra "Calentando" cuando el relé está activo | 10 |
 | `switch` | Caldera (y con ella el agua caliente). Apagarla apaga también la calefacción | 11 |
 | `sensor` ×2 | Temperatura y humedad del SHT31 | 12 |
-| `switch` | Calefacción forzada: enciende la calefacción sin mirar la temperatura (ver abajo) | 13 |
 | `number` | Temperatura externa: HA escribe aquí la de otro sensor (ver "Sensor externo") | 14 |
 | `switch` | Usar sensor externo para regular, en vez del SHT31 | 15 |
+| `number` | Ciclo mínimo caldera: minutos mínimos entre encendido y apagado (0-30) | 16 |
 | `update` | Firmware: avisa cuando hay versión nueva y la instala | 10 |
 
 ## Lógica de los relés
@@ -28,16 +28,15 @@ La calefacción no puede funcionar sin caldera, así que los dos interruptores v
 | Apagar la calefacción | La caldera sigue encendida (agua caliente) |
 | Encender la caldera | Solo agua caliente; la calefacción sigue como estaba |
 
-Los estados posibles son: todo apagado, solo caldera (agua caliente), o caldera + calefacción. Calefacción sin caldera no puede darse, salvo con la **calefacción forzada** de pruebas, que activa los dos relés sin tocar los interruptores.
+Los estados posibles son: todo apagado, solo caldera (agua caliente), o caldera + calefacción. Calefacción sin caldera no puede darse.
 
 Al encender, primero entra el relé de la caldera; al apagar, primero sale el de la calefacción.
 
 La regulación la hace el ESP32, no HA:
 
 - Enciende cuando la temperatura baja **0,3 °C** por debajo de la consigna y apaga cuando sube 0,3 °C por encima (`HYSTERESIS`).
-- Entre encendido y apagado pasan al menos **3 minutos** (`MIN_CYCLE_MS`), para no hacer ciclos cortos en la caldera. Poner el modo en Apagado corta al momento.
+- Entre encendido y apagado pasan al menos **3 minutos**, para no hacer ciclos cortos en la caldera. Se cambia desde HA con **Ciclo mínimo caldera** (0 a 30 minutos; 0 para pruebas) y se guarda en el ESP32. Poner el modo en Apagado o apagar la caldera corta al momento.
 - Si el SHT31 deja de responder durante 1 minuto, deja de calentar por seguridad. El LED parpadea en rojo. La caldera (agua caliente) no se ve afectada.
-- **Calefacción forzada**: con este interruptor en ON, los relés de calefacción y caldera se encienden sin mirar el modo, la consigna, el sensor ni el interruptor de la caldera. Sirve para probar los relés sin el SHT31 conectado, o para tirar de calefacción si el sensor se estropea. **Se apaga sola a los 30 minutos** (`FORCE_TIMEOUT_MS`) y el interruptor de HA vuelve a OFF. No se guarda: tras un reinicio arranca apagada. En la pantalla aparece "Calefaccion forzada".
 - La configuración (modo, consigna, caldera, límites, calibración) se guarda en flash. Tras un corte de luz sigue funcionando igual aunque HA o la red Zigbee no estén.
 
 ## Pantalla táctil
@@ -145,7 +144,7 @@ arduino-cli compile --upload -b "esp32:esp32:esp32c6:ZigbeeMode=ed,PartitionSche
 1. En HA: **Ajustes → Dispositivos y servicios → Zigbee Home Automation → Añadir dispositivo**.
 2. Alimenta el ESP32. El LED RGB parpadea en **azul** mientras busca red.
 3. Cuando se une, el LED se apaga y aparece **DIY Cheny Termostato**.
-4. Los interruptores y la temperatura externa ya aparecen con su nombre: **Caldera**, **Calefacción forzada**, **Usar sensor externo** y **Temperatura externa**. Son salidas binarias y analógicas de Zigbee, y ZHA usa la descripción que les pone el firmware como nombre. El resto (climate, sensores de temperatura y humedad) llevan el nombre genérico de ZHA. Si quieres cambiar algún nombre o ID de entidad: entidad → engranaje. Se conservan en las actualizaciones OTA y solo se pierden si eliminas el dispositivo de ZHA.
+4. Los interruptores y la temperatura externa ya aparecen con su nombre: **Caldera**, **Usar sensor externo**, **Temperatura externa** y **Ciclo mínimo caldera**. Son salidas binarias y analógicas de Zigbee, y ZHA usa la descripción que les pone el firmware como nombre. El resto (climate, sensores de temperatura y humedad) llevan el nombre genérico de ZHA. Si quieres cambiar algún nombre o ID de entidad: entidad → engranaje. Se conservan en las actualizaciones OTA y solo se pierden si eliminas el dispositivo de ZHA.
 
    Si después de emparejar falta algún interruptor, recarga la integración ZHA: ZHA solo crea el switch cuando ya ha leído su descripción.
 
@@ -220,6 +219,8 @@ El termostato puede regular con la temperatura de otro sensor de la casa en vez 
    ```
 
 3. Activa el interruptor **Usar sensor externo**, o toca la temperatura en la pantalla.
+
+**Para hacer pruebas** sin SHT31 ni sensor externo: activa **Usar sensor externo** y escribe a mano la temperatura que quieras simular en **Temperatura externa**. El termostato regula con ese valor (durante 1 hora como máximo, ver abajo).
 
 Seguridad: si pasa **1 hora** sin recibir la temperatura externa (HA caído, sensor sin pilas…), el termostato vuelve solo al SHT31. En la pantalla pone "Externo sin datos" y, en cuanto vuelve a llegar, regresa al externo. Si tampoco hay SHT31, no calienta. El tiempo se cambia en `EXT_TIMEOUT_MS`.
 
@@ -330,5 +331,5 @@ Para probar una versión sin publicarla:
 ## Notas
 
 - Funciona como **end device** con la radio siempre escuchando, igual que `Luz_Plantas_ESP32`. No repite la señal Zigbee. Si necesitas que haga de router, cambia a `Zigbee mode: Zigbee ZCZR` y `Zigbee.begin(ZIGBEE_ROUTER)`.
-- Las constantes de ajuste están al principio del sketch: `HYSTERESIS`, `MIN_CYCLE_MS`, pines, intervalos de lectura y envío. Las de la pantalla (pines, brillo, paso de la consigna) están al principio de [Pantalla.h](Pantalla.h).
-- Si apagas los radiadores y los vuelves a encender enseguida, la calefacción puede tardar hasta 3 minutos en arrancar: es el tiempo mínimo entre ciclos (`MIN_CYCLE_MS`) que protege la caldera.
+- Las constantes de ajuste están al principio del sketch: `HYSTERESIS`, `MIN_CYCLE_DEFAULT`, pines, intervalos de lectura y envío. Las de la pantalla (pines, brillo, paso de la consigna) están al principio de [Pantalla.h](Pantalla.h).
+- Si apagas los radiadores y los vuelves a encender enseguida, la calefacción puede tardar en arrancar lo que marque **Ciclo mínimo caldera** (3 minutos por defecto). Para pruebas, ponlo a 0.

@@ -109,7 +109,6 @@ struct UiState {
   bool    acs;         // caldera (agua caliente) encendida
   bool    connected;   // red Zigbee
   bool    ota;         // descargando firmware
-  bool    forced;      // calefacción forzada desde HA
 };
 
 enum UiAction { UI_NONE, UI_SP_DOWN, UI_SP_UP, UI_TOGGLE_HEAT, UI_TOGGLE_ACS, UI_TOGGLE_SOURCE };
@@ -218,8 +217,7 @@ void drawTemp(const UiState &s) {
 
   const char *st;
   uint32_t c;
-  if (s.forced)         { st = "Calefaccion forzada"; c = C_ORANGE; }
-  else if (!s.sensorOk) { st = "Sensor sin datos"; c = C_RED; }
+  if (!s.sensorOk)      { st = "Sensor sin datos"; c = C_RED; }
   else if (!s.heatMode) { st = "Calefaccion apagada"; c = C_DIM; }
   else if (s.heating)   { st = "Calentando"; c = C_ORANGE; }
   else                  { st = "En reposo"; c = C_DIM; }
@@ -322,7 +320,7 @@ void uiUpdate(const UiState &s) {
       s.humOk != prev.humOk || (int)lroundf(s.hum) != (int)lroundf(prev.hum))
     drawTop(s);
   if (all || s.sensorOk != prev.sensorOk || t10(s.temp) != t10(prev.temp) || s.heatMode != prev.heatMode || s.heating != prev.heating ||
-      s.forced != prev.forced || s.extSelected != prev.extSelected || s.extActive != prev.extActive)
+      s.extSelected != prev.extSelected || s.extActive != prev.extActive)
     drawTemp(s);
   if (all || s.setpoint != prev.setpoint || s.heatMode != prev.heatMode)
     drawSetpoint(s);

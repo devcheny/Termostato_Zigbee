@@ -17,20 +17,17 @@
  *   - Relé CALDERA:     enciende la caldera (y con ella el agua caliente sanitaria).
  *   - Relé CALEFACCION: enciende la calefacción.
  *   La calefacción no puede funcionar sin caldera: encender la calefacción
- *   enciende la caldera, y apagar la caldera apaga la calefacción. La única
- *   excepción es la calefacción forzada (pruebas), que activa los dos relés
- *   sin tocar los interruptores.
+ *   enciende la caldera, y apagar la caldera apaga la calefacción.
  *
  * En ZHA aparece "DIY Cheny Termostato" con:
  *   - climate: calefacción (Apagado / Calor, consigna, temperatura actual).
  *   - switch:  caldera (agua caliente).
  *   - sensor:  temperatura y humedad del SHT31.
- *   - switch:  calefacción forzada (enciende sin mirar la temperatura, para
- *              pruebas o si falla el sensor; se apaga sola a los 30 min).
  *   - number:  temperatura externa. HA escribe aquí la de otro sensor (p. ej.
  *              un SONOFF SNZB-02D) con una automatización.
  *   - switch:  usar sensor externo para regular (también desde la pantalla).
  *              Si el externo deja de llegar, vuelve solo al SHT31.
+ *   - number:  ciclo mínimo de la caldera en minutos (0 para pruebas).
  *   - update:  actualizaciones de firmware por Zigbee (OTA).
  *
  * El control (histéresis) lo hace el propio ESP32: si se cae HA o la red
@@ -52,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000008
+#define FW_VERSION      0x00000009
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -90,16 +87,17 @@
 #define EP_THERMOSTAT  10
 #define EP_ACS         11
 #define EP_SENSOR      12
-#define EP_FORCE       13
+// El endpoint 13 era la "calefacción forzada" (eliminada en la v9)
 #define EP_EXT_TEMP    14
 #define EP_EXT_SELECT  15
+#define EP_MIN_CYCLE   16
 
 #define HYSTERESIS        0.3f      // ºC por debajo / encima de la consigna
-#define MIN_CYCLE_MS      (3UL * 60 * 1000)  // tiempo mínimo encendida/apagada (protege la caldera)
+#define MIN_CYCLE_DEFAULT 3         // minutos mínimos encendida/apagada (protege la caldera); se cambia desde HA
+#define MIN_CYCLE_MAX     30
 #define READ_INTERVAL_MS  10000     // lectura del SHT31
 #define REPORT_INTERVAL_MS 60000    // envío periódico a ZHA aunque no cambie nada
 #define SENSOR_FAIL_MS    60000     // sin lecturas válidas este tiempo -> apaga la calefacción
-#define FORCE_TIMEOUT_MS  (30UL * 60 * 1000)  // la calefacción forzada se apaga sola pasado este tiempo
 #define EXT_TIMEOUT_MS    (60UL * 60 * 1000)  // sin temperatura externa este tiempo -> usa el SHT31
 #define SAVE_DELAY_MS     5000
 #define RESET_HOLD_MS     3000
@@ -157,36 +155,89 @@ bool shtRead(float &t, float &h) {
   return true;
 }
 
+// La pila Zigbee solo envía informes de atributos creados como reportables. Cambiar
+// la marca después de crearlos hace que aborte al informar (probado), así que los
+// endpoints que necesitan informar de atributos se construyen atributo a atributo.
+static void addAttr(esp_zb_attribute_list_t *list, uint16_t cluster, uint16_t id, uint8_t type, uint8_t access, void *value) {
+  if (esp_zb_cluster_add_attr(list, cluster, id, type, access, value) != ESP_OK) log_e("No se pudo añadir el atributo 0x%04x", id);
+}
+
+static esp_zb_cluster_list_t *newClusterList() {
+  esp_zb_cluster_list_t *list = esp_zb_zcl_cluster_list_create();
+  esp_zb_cluster_list_add_basic_cluster(list, esp_zb_basic_cluster_create(NULL), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+  esp_zb_cluster_list_add_identify_cluster(list, esp_zb_identify_cluster_create(NULL), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+  return list;
+}
+
+// Endpoint que informa a ZHA de sus atributos. La pila Zigbee aborta si se informa de
+// un atributo sin configuración de informes (la crea ZHA al emparejar, pero no si el
+// atributo no era reportable entonces), así que se crea también desde el firmware.
+class ZigbeeReportingEP : public ZigbeeEP {
+public:
+  ZigbeeReportingEP(uint8_t endpoint) : ZigbeeEP(endpoint) {}
+
+  bool enableReporting(uint16_t cluster, uint16_t attr, uint16_t minInterval, uint16_t maxInterval, uint16_t delta = 0) {
+    esp_zb_zcl_reporting_info_t info = {};
+    info.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV;
+    info.ep = _endpoint;
+    info.cluster_id = cluster;
+    info.cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE;
+    info.attr_id = attr;
+    info.u.send_info.min_interval = minInterval;
+    info.u.send_info.max_interval = maxInterval;
+    info.u.send_info.def_min_interval = minInterval;
+    info.u.send_info.def_max_interval = maxInterval;
+    info.u.send_info.delta.u16 = delta;
+    info.dst.profile_id = ESP_ZB_AF_HA_PROFILE_ID;
+    info.manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC;
+    return setClusterReporting(&info);
+  }
+
+  bool reportAttr(uint16_t cluster, uint16_t attr) {
+    esp_zb_zcl_report_attr_cmd_t cmd = {};
+    cmd.address_mode = ESP_ZB_APS_ADDR_MODE_DST_ADDR_ENDP_NOT_PRESENT;
+    cmd.attributeID = attr;
+    cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
+    cmd.clusterID = cluster;
+    cmd.zcl_basic_cmd.src_endpoint = _endpoint;
+    return reportClusterAttribute(&cmd);
+  }
+};
+
 // ---------------- Endpoint termostato (no existe en la librería) ----------------
 // Clúster Thermostat (0x0201) en modo servidor, solo calor. ZHA lo muestra como climate.
-class ZigbeeHeatingThermostat : public ZigbeeEP {
+class ZigbeeHeatingThermostat : public ZigbeeReportingEP {
 public:
-  ZigbeeHeatingThermostat(uint8_t endpoint) : ZigbeeEP(endpoint) {
+  ZigbeeHeatingThermostat(uint8_t endpoint) : ZigbeeReportingEP(endpoint) {
     _device_id = ESP_ZB_HA_THERMOSTAT_DEVICE_ID;
 
-    esp_zb_thermostat_cfg_t cfg = ESP_ZB_DEFAULT_THERMOSTAT_CONFIG();
-    cfg.thermostat_cfg.local_temperature = (int16_t)0x8000;   // "desconocida" hasta la primera lectura
-    cfg.thermostat_cfg.occupied_heating_setpoint = SETPOINT_DEFAULT;
-    cfg.thermostat_cfg.control_sequence_of_operation = ESP_ZB_ZCL_THERMOSTAT_CONTROL_SEQ_OF_OPERATION_HEATING_ONLY;
-    cfg.thermostat_cfg.system_mode = ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF;
-    _cluster_list = esp_zb_thermostat_clusters_create(&cfg);
-
-    esp_zb_attribute_list_t *th =
-      esp_zb_cluster_list_get_cluster(_cluster_list, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    const uint16_t TH = ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT;
+    const uint8_t R = ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY, RW = ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, REP = ESP_ZB_ZCL_ATTR_ACCESS_REPORTING;
+    int16_t local = (int16_t)0x8000;   // "desconocida" hasta la primera lectura
+    int16_t heatSp = SETPOINT_DEFAULT, coolSp = 2600;
     int16_t absMin = SETPOINT_ABS_MIN, absMax = SETPOINT_ABS_MAX;
+    uint8_t seq = ESP_ZB_ZCL_THERMOSTAT_CONTROL_SEQ_OF_OPERATION_HEATING_ONLY;
+    uint8_t mode = ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF;
     int8_t calib = 0;
-    esp_zb_thermostat_cluster_add_attr(th, ESP_ZB_ZCL_ATTR_THERMOSTAT_ABS_MIN_HEAT_SETPOINT_LIMIT_ID, &absMin);
-    esp_zb_thermostat_cluster_add_attr(th, ESP_ZB_ZCL_ATTR_THERMOSTAT_ABS_MAX_HEAT_SETPOINT_LIMIT_ID, &absMax);
-    esp_zb_thermostat_cluster_add_attr(th, ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_HEAT_SETPOINT_LIMIT_ID, &absMin);
-    esp_zb_thermostat_cluster_add_attr(th, ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_HEAT_SETPOINT_LIMIT_ID, &absMax);
-    esp_zb_thermostat_cluster_add_attr(th, ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_CALIBRATION_ID, &calib);
-    // Estado de los relés (bit 0 = calor) y demanda 0/100 %, para que HA muestre "Calentando"
-    uint16_t runningState = 0;
+    uint16_t runningState = 0;   // bit 0 = calor: HA muestra "Calentando"
     uint8_t demand = 0;
-    esp_zb_cluster_add_attr(th, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID,
-                            ESP_ZB_ZCL_ATTR_TYPE_16BITMAP, ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING, &runningState);
-    esp_zb_cluster_add_attr(th, ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, ESP_ZB_ZCL_ATTR_THERMOSTAT_PI_HEATING_DEMAND_ID,
-                            ESP_ZB_ZCL_ATTR_TYPE_U8, ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING, &demand);
+
+    esp_zb_attribute_list_t *th = esp_zb_zcl_attr_list_create(TH);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID, ESP_ZB_ZCL_ATTR_TYPE_S16, R | REP, &local);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID, ESP_ZB_ZCL_ATTR_TYPE_S16, RW | REP, &heatSp);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID, ESP_ZB_ZCL_ATTR_TYPE_S16, RW, &coolSp);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_CONTROL_SEQUENCE_OF_OPERATION_ID, ESP_ZB_ZCL_ATTR_TYPE_8BIT_ENUM, RW, &seq);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID, ESP_ZB_ZCL_ATTR_TYPE_8BIT_ENUM, RW | REP, &mode);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_ABS_MIN_HEAT_SETPOINT_LIMIT_ID, ESP_ZB_ZCL_ATTR_TYPE_S16, R, &absMin);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_ABS_MAX_HEAT_SETPOINT_LIMIT_ID, ESP_ZB_ZCL_ATTR_TYPE_S16, R, &absMax);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_HEAT_SETPOINT_LIMIT_ID, ESP_ZB_ZCL_ATTR_TYPE_S16, RW, &absMin);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_HEAT_SETPOINT_LIMIT_ID, ESP_ZB_ZCL_ATTR_TYPE_S16, RW, &absMax);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_CALIBRATION_ID, ESP_ZB_ZCL_ATTR_TYPE_S8, RW, &calib);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID, ESP_ZB_ZCL_ATTR_TYPE_16BITMAP, R | REP, &runningState);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_PI_HEATING_DEMAND_ID, ESP_ZB_ZCL_ATTR_TYPE_U8, R | REP, &demand);
+
+    _cluster_list = newClusterList();
+    esp_zb_cluster_list_add_thermostat_cluster(_cluster_list, th, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     _ep_config = {
       .endpoint = _endpoint, .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID, .app_device_id = ESP_ZB_HA_THERMOSTAT_DEVICE_ID, .app_device_version = 0
@@ -201,13 +252,17 @@ public:
   }
 
   bool report(uint16_t attr) {
-    esp_zb_zcl_report_attr_cmd_t cmd = {};
-    cmd.address_mode = ESP_ZB_APS_ADDR_MODE_DST_ADDR_ENDP_NOT_PRESENT;
-    cmd.attributeID = attr;
-    cmd.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI;
-    cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT;
-    cmd.zcl_basic_cmd.src_endpoint = _endpoint;
-    return reportClusterAttribute(&cmd);
+    return reportAttr(ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT, attr);
+  }
+
+  // Llamar tras Zigbee.begin(), antes de informar de nada
+  void enableReports() {
+    const uint16_t TH = ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT;
+    enableReporting(TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID, 30, 300, 10);   // 0,1 ºC
+    enableReporting(TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID, 0, 300, 1);
+    enableReporting(TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID, 0, 300);
+    enableReporting(TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID, 0, 300);
+    enableReporting(TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_PI_HEATING_DEMAND_ID, 0, 300, 1);
   }
 
 private:
@@ -228,23 +283,72 @@ private:
 ZigbeeHeatingThermostat zbThermostat(EP_THERMOSTAT);
 // Interruptores como salidas binarias (BinaryOutput): ZHA usa su descripción como
 // nombre del switch, así cada uno aparece ya con su nombre al emparejar.
-ZigbeeBinary            zbAcs(EP_ACS);
-ZigbeeTempSensor        zbSensor(EP_SENSOR);
-ZigbeeBinary            zbForce(EP_FORCE);
-
-// Salida analógica (ZHA la muestra como number) donde HA escribe la temperatura externa
-class ZigbeeExternalTemp : public ZigbeeAnalog {
+class ZigbeeNamedSwitch : public ZigbeeReportingEP {
 public:
-  ZigbeeExternalTemp(uint8_t endpoint) : ZigbeeAnalog(endpoint) {}
-  bool setUnitsCelsius() {
+  ZigbeeNamedSwitch(uint8_t endpoint, const char *name) : ZigbeeReportingEP(endpoint) {
+    _device_id = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID;
+    const uint16_t BO = ESP_ZB_ZCL_CLUSTER_ID_BINARY_OUTPUT;
+    bool value = false, outOfService = false;
+    uint8_t statusFlags = 0;
+    char desc[ZB_MAX_NAME_LENGTH + 2];   // cadena ZCL: longitud + texto
+    size_t len = strnlen(name, ZB_MAX_NAME_LENGTH);
+    desc[0] = (char)len;
+    memcpy(desc + 1, name, len);
+    desc[len + 1] = 0;
+
+    esp_zb_attribute_list_t *bo = esp_zb_zcl_attr_list_create(BO);
+    addAttr(bo, BO, ESP_ZB_ZCL_ATTR_BINARY_OUTPUT_PRESENT_VALUE_ID, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING, &value);
+    addAttr(bo, BO, ESP_ZB_ZCL_ATTR_BINARY_OUTPUT_OUT_OF_SERVICE_ID, ESP_ZB_ZCL_ATTR_TYPE_BOOL, ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, &outOfService);
+    addAttr(bo, BO, ESP_ZB_ZCL_ATTR_BINARY_OUTPUT_STATUS_FLAGS_ID, ESP_ZB_ZCL_ATTR_TYPE_8BITMAP, ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY, &statusFlags);
+    addAttr(bo, BO, ESP_ZB_ZCL_ATTR_BINARY_OUTPUT_DESCRIPTION_ID, ESP_ZB_ZCL_ATTR_TYPE_CHAR_STRING, ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY, desc);
+
+    _cluster_list = newClusterList();
+    esp_zb_cluster_list_add_binary_output_cluster(_cluster_list, bo, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    _ep_config = {
+      .endpoint = _endpoint, .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID, .app_device_id = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID, .app_device_version = 0
+    };
+  }
+
+  // Se llama desde la tarea Zigbee cuando HA cambia el interruptor
+  void onChange(void (*callback)(bool)) { _cb = callback; }
+
+  bool set(bool value) {
+    return setClusterAttribute(ESP_ZB_ZCL_CLUSTER_ID_BINARY_OUTPUT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                               ESP_ZB_ZCL_ATTR_BINARY_OUTPUT_PRESENT_VALUE_ID, &value, false) == ESP_ZB_ZCL_STATUS_SUCCESS;
+  }
+
+  // Llamar tras Zigbee.begin(), antes de informar de nada
+  void enableReports() {
+    enableReporting(ESP_ZB_ZCL_CLUSTER_ID_BINARY_OUTPUT, ESP_ZB_ZCL_ATTR_BINARY_OUTPUT_PRESENT_VALUE_ID, 0, 300);
+  }
+
+private:
+  void (*_cb)(bool) = nullptr;
+
+  void zbAttributeSet(const esp_zb_zcl_set_attr_value_message_t *message) override {
+    if (message->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_BINARY_OUTPUT && message->attribute.id == ESP_ZB_ZCL_ATTR_BINARY_OUTPUT_PRESENT_VALUE_ID &&
+        message->attribute.data.value && _cb)
+      _cb(*(bool *)message->attribute.data.value);
+  }
+};
+
+ZigbeeNamedSwitch       zbAcs(EP_ACS, "Caldera");
+ZigbeeTempSensor        zbSensor(EP_SENSOR);
+
+// Salidas analógicas (ZHA las muestra como number con la descripción como nombre)
+class ZigbeeNumber : public ZigbeeAnalog {
+public:
+  ZigbeeNumber(uint8_t endpoint) : ZigbeeAnalog(endpoint) {}
+  bool setUnits(uint16_t units) {   // BACnet engineering units: 62 = ºC, 72 = minutos
     esp_zb_attribute_list_t *ao =
       esp_zb_cluster_list_get_cluster(_cluster_list, ESP_ZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    uint16_t units = 62;   // ºC (BACnet engineering units)
     return ao && esp_zb_analog_output_cluster_add_attr(ao, ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_ENGINEERING_UNITS_ID, &units) == ESP_OK;
   }
 };
-ZigbeeExternalTemp      zbExtTemp(EP_EXT_TEMP);
-ZigbeeBinary            zbExtSelect(EP_EXT_SELECT);
+ZigbeeNumber            zbExtTemp(EP_EXT_TEMP);   // HA escribe aquí la temperatura externa
+ZigbeeNumber            zbMinCycle(EP_MIN_CYCLE);  // ciclo mínimo de la caldera (minutos)
+ZigbeeNamedSwitch       zbExtSelect(EP_EXT_SELECT, "Usar sensor externo");
 
 // ---------------- Estado ----------------
 struct Config {
@@ -254,6 +358,7 @@ struct Config {
   int8_t  calibration;  // 0,1 ºC
   bool    acsOn;        // caldera (agua caliente) encendida
   bool    useExternal;  // regular con el sensor externo
+  uint8_t minCycle;     // minutos mínimos entre encendido y apagado de la calefacción
 };
 Config cfg;
 
@@ -274,9 +379,6 @@ bool heatDemand = false;             // la calefacción pide calor (histéresis)
 unsigned long lastHeatSwitch = 0;
 bool heatSwitchedOnce = false;
 
-bool forced = false;                 // calefacción forzada desde HA (no se guarda: tras reiniciar, apagada)
-unsigned long forcedSince = 0;
-
 Preferences prefs;
 unsigned long lastChange = 0;
 bool pendingSave = false;
@@ -287,12 +389,12 @@ volatile bool otaRunning = false;
 volatile bool zbChanged = false;
 volatile bool zbAcsChanged = false;
 volatile bool zbAcsValue = false;
-volatile bool zbForceChanged = false;
-volatile bool zbForceValue = false;
 volatile bool zbExtTempChanged = false;
 volatile float zbExtTempValue = 0;
 volatile bool zbExtSelChanged = false;
 volatile bool zbExtSelValue = false;
+volatile bool zbMinCycleChanged = false;
+volatile float zbMinCycleValue = 0;
 
 // ---------------- Persistencia ----------------
 void loadConfig() {
@@ -304,6 +406,8 @@ void loadConfig() {
   cfg.calibration = prefs.getChar("cal", 0);
   cfg.acsOn       = prefs.getBool("acs", false);
   cfg.useExternal = prefs.getBool("ext", false);
+  cfg.minCycle    = prefs.getUChar("cyc", MIN_CYCLE_DEFAULT);
+  if (cfg.minCycle > MIN_CYCLE_MAX) cfg.minCycle = MIN_CYCLE_DEFAULT;
   prefs.end();
   if (cfg.heatMode) cfg.acsOn = true;   // calefacción sin caldera no es un estado válido
 }
@@ -317,6 +421,7 @@ void saveConfig() {
   prefs.putChar("cal", cfg.calibration);
   prefs.putBool("acs", cfg.acsOn);
   prefs.putBool("ext", cfg.useExternal);
+  prefs.putUChar("cyc", cfg.minCycle);
   prefs.end();
   Serial.println("Configuración guardada");
 }
@@ -356,11 +461,6 @@ void setHeatDemand(bool on) {
 }
 
 void regulate() {
-  // Forzada: enciende sin mirar modo, sensor ni ciclo mínimo
-  if (forced) {
-    setHeatDemand(true);
-    return;
-  }
   // Apagado o sensor sin datos: corta al momento (sin esperar el ciclo mínimo)
   if (!cfg.heatMode || !ctrlOk) {
     setHeatDemand(false);
@@ -371,7 +471,7 @@ void regulate() {
   if (ctrlTemp <= sp - HYSTERESIS) want = true;
   else if (ctrlTemp >= sp + HYSTERESIS) want = false;
 
-  if (want != heatDemand && heatSwitchedOnce && millis() - lastHeatSwitch < MIN_CYCLE_MS) return;
+  if (want != heatDemand && heatSwitchedOnce && millis() - lastHeatSwitch < cfg.minCycle * 60000UL) return;
   setHeatDemand(want);
 }
 
@@ -437,11 +537,10 @@ void publishConfig() {
   zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_CALIBRATION_ID, &cfg.calibration);
   uint16_t running = heatDemand ? 0x0001 : 0x0000;
   zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID, &running);
-  zbAcs.setBinaryOutput(cfg.acsOn);
-  zbForce.setBinaryOutput(forced);
-  zbExtSelect.setBinaryOutput(cfg.useExternal);
-  // Sin reportBinaryOutput(): en esta versión de la librería hace abortar la pila
-  // Zigbee. ZHA configura el reporting del atributo y se entera igualmente.
+  // Los interruptores no se informan a mano: el SDK aborta al enviar un informe manual
+  // de una salida binaria. La pila los informa sola al cambiar (ver enableReports()).
+  zbAcs.set(cfg.acsOn);
+  zbExtSelect.set(cfg.useExternal);
 }
 
 // ---------------- Callbacks Zigbee (tarea Zigbee: no tocar la pila aquí) ----------------
@@ -464,14 +563,14 @@ void onThermostatAttr(uint16_t attr, int32_t value) {
   zbChanged = true;
 }
 
-void onForceChange(bool state) {
-  zbForceValue = state;
-  zbForceChanged = true;
-}
-
 void onExtTemp(float value) {
   zbExtTempValue = value;
   zbExtTempChanged = true;
+}
+
+void onMinCycle(float value) {
+  zbMinCycleValue = value;
+  zbMinCycleChanged = true;
 }
 
 void onExtSelect(bool state) {
@@ -521,8 +620,9 @@ void setCaldera(bool on) {
 void publishAndReport() {
   publishConfig();
   if (Zigbee.connected()) {
-    zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID);
-    zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID);
+    if (!zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID) ||
+        !zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID))
+      Serial.println("Aviso: no se pudo informar a ZHA del modo o la consigna");
   }
 }
 
@@ -566,16 +666,6 @@ void processZigbeeChanges() {
     regulate();
   }
 
-  if (zbForceChanged) {
-    zbForceChanged = false;
-    if (zbForceValue != forced) {
-      forced = zbForceValue;
-      forcedSince = millis();
-      Serial.printf("Calefacción forzada: %s\n", forced ? "ON (se apaga sola en 30 min)" : "OFF");
-      regulate();
-    }
-  }
-
   if (zbAcsChanged) {
     zbAcsChanged = false;
     if (zbAcsValue != cfg.acsOn) {
@@ -612,6 +702,19 @@ void processZigbeeChanges() {
       Serial.printf("Sensor para regular: %s\n", cfg.useExternal ? "EXTERNO" : "SHT31");
       updateControlTemp();
       regulate();
+      markDirty();
+    }
+  }
+
+  if (zbMinCycleChanged) {
+    zbMinCycleChanged = false;
+    long v = lroundf(zbMinCycleValue);
+    if (v < 0) v = 0;
+    if (v > MIN_CYCLE_MAX) v = MIN_CYCLE_MAX;
+    if (v != cfg.minCycle) {
+      cfg.minCycle = v;
+      Serial.printf("Ciclo mínimo de la caldera: %u min\n", cfg.minCycle);
+      regulate();   // con 0, aplica ya el cambio pendiente
       markDirty();
     }
   }
@@ -671,7 +774,6 @@ void handleUi() {
   s.acs = cfg.acsOn;
   s.connected = Zigbee.connected();
   s.ota = otaRunning;
-  s.forced = forced;
   uiUpdate(s);
 }
 
@@ -684,7 +786,7 @@ void updateLed(bool connected) {
     lastBlink = now;
     blinkOn = !blinkOn;
   }
-  if (!ctrlOk && cfg.heatMode && !forced) rgbLedWrite(STATUS_LED, blinkOn ? 40 : 0, 0, 0);
+  if (!ctrlOk && cfg.heatMode) rgbLedWrite(STATUS_LED, blinkOn ? 40 : 0, 0, 0);
   else if (!connected)            rgbLedWrite(STATUS_LED, 0, 0, blinkOn ? 30 : 0);
   else if (heatDemand)            rgbLedWrite(STATUS_LED, 30, 8, 0);
   else                            rgbLedWrite(STATUS_LED, 0, 0, 0);
@@ -774,14 +876,8 @@ void setup() {
   zbThermostat.onOTAStateChange(onOtaState);
 
   zbAcs.setManufacturerAndModel(MANUFACTURER, MODEL);
-  zbAcs.addBinaryOutput();
-  zbAcs.setBinaryOutputDescription("Caldera");
-  zbAcs.onBinaryOutputChange(onAcsChange);
+  zbAcs.onChange(onAcsChange);
 
-  zbForce.setManufacturerAndModel(MANUFACTURER, MODEL);
-  zbForce.addBinaryOutput();
-  zbForce.setBinaryOutputDescription("Calefacción forzada");
-  zbForce.onBinaryOutputChange(onForceChange);
 
   zbExtTemp.setManufacturerAndModel(MANUFACTURER, MODEL);
   zbExtTemp.addAnalogOutput();
@@ -789,13 +885,19 @@ void setup() {
   zbExtTemp.setAnalogOutputDescription("Temperatura externa");
   zbExtTemp.setAnalogOutputResolution(0.1);
   zbExtTemp.setAnalogOutputMinMax(-20, 60);
-  zbExtTemp.setUnitsCelsius();
+  zbExtTemp.setUnits(62);
   zbExtTemp.onAnalogOutputChange(onExtTemp);
 
+  zbMinCycle.setManufacturerAndModel(MANUFACTURER, MODEL);
+  zbMinCycle.addAnalogOutput();
+  zbMinCycle.setAnalogOutputDescription("Ciclo mínimo caldera");
+  zbMinCycle.setAnalogOutputResolution(1);
+  zbMinCycle.setAnalogOutputMinMax(0, MIN_CYCLE_MAX);
+  zbMinCycle.setUnits(72);
+  zbMinCycle.onAnalogOutputChange(onMinCycle);
+
   zbExtSelect.setManufacturerAndModel(MANUFACTURER, MODEL);
-  zbExtSelect.addBinaryOutput();
-  zbExtSelect.setBinaryOutputDescription("Usar sensor externo");
-  zbExtSelect.onBinaryOutputChange(onExtSelect);
+  zbExtSelect.onChange(onExtSelect);
 
   zbSensor.setManufacturerAndModel(MANUFACTURER, MODEL);
   zbSensor.setMinMaxValue(-20, 60);
@@ -805,9 +907,9 @@ void setup() {
   Zigbee.addEndpoint(&zbThermostat);
   Zigbee.addEndpoint(&zbAcs);
   Zigbee.addEndpoint(&zbSensor);
-  Zigbee.addEndpoint(&zbForce);
   Zigbee.addEndpoint(&zbExtTemp);
   Zigbee.addEndpoint(&zbExtSelect);
+  Zigbee.addEndpoint(&zbMinCycle);
 
   // End device con la radio siempre escuchando: responde al instante sin hacer de router
   Zigbee.setRxOnWhenIdle(true);
@@ -818,6 +920,10 @@ void setup() {
   }
   Serial.println("Zigbee iniciado, buscando red...");
 
+  zbThermostat.enableReports();
+  zbAcs.enableReports();
+  zbExtSelect.enableReports();
+  zbMinCycle.setAnalogOutput(cfg.minCycle);   // valor guardado, para que HA lo vea
   publishConfig();
   zbSensor.setReporting(30, 300, 0.2);
   zbSensor.setHumidityReporting(30, 300, 2);
@@ -851,13 +957,6 @@ void loop() {
     saveConfig();
     delay(1000);
     ESP.restart();
-  }
-
-  if (forced && now - forcedSince > FORCE_TIMEOUT_MS) {
-    Serial.println("Calefacción forzada: tiempo agotado, se apaga");
-    forced = false;
-    zbForce.setBinaryOutput(false);   // HA ve el interruptor apagado
-    regulate();
   }
 
   static unsigned long lastRead = 0;
