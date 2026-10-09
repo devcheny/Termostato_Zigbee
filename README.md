@@ -236,7 +236,7 @@ Si haces push sin subir `FW_VERSION`, el workflow no publica nada. Así puedes s
 
 1. ZHA lee el `index.json` como mucho **una vez cada 24 h**. Para que lo lea ya, reinicia HA o recarga la integración ZHA.
 2. El termostato pregunta por actualizaciones al conectarse y luego cada hora. Para no esperar, reinícialo (desenchufar y enchufar).
-3. La entidad **update** del dispositivo muestra la versión nueva. Pulsa **Instalar**. La descarga tarda unos 10-20 minutos y mientras tanto el termostato sigue regulando.
+3. La entidad **update** del dispositivo muestra la versión nueva. Pulsa **Instalar**. La descarga tarda entre 1 y 1,5 horas (ZHA envía la imagen en trozos de 50 bytes, unos 16.000 trozos) y mientras tanto el termostato sigue regulando con normalidad.
 4. Al terminar, el ESP32 se reinicia con el firmware nuevo y conserva la red y la configuración.
 
 ZHA comprueba el checksum del `.ota` antes de enviarlo. Si aun así la imagen llega mal, el ESP32 la descarta y sigue con la versión anterior.
