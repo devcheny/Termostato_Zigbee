@@ -7,25 +7,36 @@ En ZHA aparece un dispositivo **DIY Cheny Termostato** con:
 | Entidad | Qué hace | Endpoint |
 |---------|----------|----------|
 | `climate` | Calefacción: modo Apagado / Calor, consigna y temperatura actual. Muestra "Calentando" cuando el relé está activo | 10 |
-| `switch` | Agua caliente sanitaria (caldera) | 11 |
+| `switch` | Caldera (y con ella el agua caliente). Apagarla apaga también la calefacción | 11 |
 | `sensor` ×2 | Temperatura y humedad del SHT31 | 12 |
 | `switch` | Calefacción forzada: enciende la calefacción sin mirar la temperatura (ver abajo) | 13 |
 | `update` | Firmware: avisa cuando hay versión nueva y la instala | 10 |
 
 ## Lógica de los relés
 
-- **Relé CALDERA** (GPIO18): se enciende si el agua caliente está ON **o** si la calefacción pide calor.
+- **Relé CALDERA** (GPIO18): enciende la caldera, y con ella el agua caliente.
 - **Relé CALEFACCION** (GPIO19): se enciende cuando la calefacción pide calor.
 
-Así la calefacción nunca funciona sin caldera. Al encender, primero entra la caldera; al apagar, primero sale la calefacción. Si apagas el agua caliente mientras la calefacción está calentando, la caldera sigue encendida hasta que la calefacción termine.
+La calefacción no puede funcionar sin caldera, así que los dos interruptores van enlazados:
+
+| Acción (desde HA o la pantalla) | Resultado |
+|---|---|
+| Encender la calefacción (modo Calor) | Se enciende también la caldera |
+| Apagar la caldera | Se apaga también la calefacción |
+| Apagar la calefacción | La caldera sigue encendida (agua caliente) |
+| Encender la caldera | Solo agua caliente; la calefacción sigue como estaba |
+
+Los estados posibles son: todo apagado, solo caldera (agua caliente), o caldera + calefacción. Calefacción sin caldera no puede darse, salvo con la **calefacción forzada** de pruebas, que activa los dos relés sin tocar los interruptores.
+
+Al encender, primero entra el relé de la caldera; al apagar, primero sale el de la calefacción.
 
 La regulación la hace el ESP32, no HA:
 
 - Enciende cuando la temperatura baja **0,3 °C** por debajo de la consigna y apaga cuando sube 0,3 °C por encima (`HYSTERESIS`).
 - Entre encendido y apagado pasan al menos **3 minutos** (`MIN_CYCLE_MS`), para no hacer ciclos cortos en la caldera. Poner el modo en Apagado corta al momento.
-- Si el SHT31 deja de responder durante 1 minuto, **apaga la calefacción** por seguridad. El LED parpadea en rojo. El agua caliente no se ve afectada.
-- **Calefacción forzada**: con este interruptor en ON, la calefacción (y la caldera) se encienden sin mirar el modo, la consigna ni el sensor. Sirve para probar los relés sin el SHT31 conectado, o para tirar de calefacción si el sensor se estropea. **Se apaga sola a los 30 minutos** (`FORCE_TIMEOUT_MS`) y el interruptor de HA vuelve a OFF. No se guarda: tras un reinicio arranca apagada. En la pantalla aparece "Calefaccion forzada".
-- La configuración (modo, consigna, agua caliente, límites, calibración) se guarda en flash. Tras un corte de luz sigue funcionando igual aunque HA o la red Zigbee no estén.
+- Si el SHT31 deja de responder durante 1 minuto, deja de calentar por seguridad. El LED parpadea en rojo. La caldera (agua caliente) no se ve afectada.
+- **Calefacción forzada**: con este interruptor en ON, los relés de calefacción y caldera se encienden sin mirar el modo, la consigna, el sensor ni el interruptor de la caldera. Sirve para probar los relés sin el SHT31 conectado, o para tirar de calefacción si el sensor se estropea. **Se apaga sola a los 30 minutos** (`FORCE_TIMEOUT_MS`) y el interruptor de HA vuelve a OFF. No se guarda: tras un reinicio arranca apagada. En la pantalla aparece "Calefaccion forzada".
+- La configuración (modo, consigna, caldera, límites, calibración) se guarda en flash. Tras un corte de luz sigue funcionando igual aunque HA o la red Zigbee no estén.
 
 ## Pantalla táctil
 
@@ -33,21 +44,21 @@ Pantalla de 3,5" 320×480 SPI con táctil resistivo (la que viene con lápiz).
 
 ```
 +------------------------------------------------+
-| ● Zigbee        ● Caldera             Hum 48%  |
+| ● Zigbee                              Hum 48%  |
 |   Temperatura   |        Consigna              |
 |                 |         20.5°                |
 |     21.4°       |   [   -   ]   [   +   ]      |
 |   Calentando    |                              |
-| [ Radiadores ENCENDIDA ] [ Agua caliente APAGADA ] |
+| [ Radiadores ENCENDIDA ]  [ Caldera ENCENDIDA ] |
 +------------------------------------------------+
 ```
 
 - **− / +**: cambian la consigna de 0,5 en 0,5 °C. Si mantienes pulsado, repite.
-- **Radiadores**: cambia la calefacción entre Calor y Apagado (lo mismo que el modo en HA).
-- **Agua caliente**: enciende o apaga la caldera para el agua caliente.
+- **Radiadores**: cambia la calefacción entre Calor y Apagado (lo mismo que el modo en HA). Al encenderla se enciende también la caldera.
+- **Caldera**: enciende o apaga la caldera (agua caliente). Al apagarla se apaga también la calefacción.
 - Lo que cambies en la pantalla se ve en HA al momento, y al revés.
 - Tras 30 s sin tocarla baja el brillo (`DIM_AFTER_MS`, `BL_DIM`). El primer toque solo la enciende, no pulsa ningún botón.
-- Arriba: estado de la red Zigbee (verde = conectado, rojo = sin red, azul = actualizando firmware), si la caldera está encendida y la humedad.
+- Arriba: estado de la red Zigbee (verde = conectado, rojo = sin red, azul = actualizando firmware) y la humedad.
 
 **Chip de la pantalla:** se vende como "ILI9341", pero un ILI9341 no llega a 320×480. Estas pantallas llevan **ILI9488** (lo más habitual) o **ST7796S**. El sketch viene para ILI9488. Si la pantalla se queda en blanco o la imagen sale mal, comenta `#define PANEL_ILI9488` en [Pantalla.h](Pantalla.h) para usar ST7796S. Si los colores salen invertidos o con rojo y azul cambiados, cambia `PANEL_INVERT` o `PANEL_BGR`.
 
@@ -136,7 +147,7 @@ arduino-cli compile --upload -b "esp32:esp32:esp32c6:ZigbeeMode=ed,PartitionSche
    | Entidad que crea ZHA | Nombre | ID de entidad |
    |---|---|---|
    | climate | Calefacción | `climate.calefaccion` |
-   | interruptor del endpoint 11 (agua caliente) | Caldera | `switch.caldera` |
+   | interruptor del endpoint 11 (caldera) | Caldera | `switch.caldera` |
    | interruptor del endpoint 13 (forzada) | Calefacción forzada | `switch.calefaccion_forzada` |
 
    Con ZHA el firmware no puede poner estos nombres, así que hay que hacerlo a mano una vez. Se conservan en todas las actualizaciones OTA. Solo se pierden si eliminas el dispositivo de ZHA, así que hazlo después del último reemparejado.
@@ -176,7 +187,7 @@ actions:
 mode: single
 ```
 
-El agua caliente es un `switch` normal: `switch.turn_on` / `switch.turn_off` en el horario que quieras.
+La caldera es un `switch` normal: `switch.turn_on` / `switch.turn_off` en el horario que quieras. Recuerda que apagarla apaga también la calefacción.
 
 Para un horario semanal editable desde la interfaz, sirve el **helper Horario** (`schedule`) de HA y una automatización que cambie la consigna cuando el horario pase a `on` / `off`.
 

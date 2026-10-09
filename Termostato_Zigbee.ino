@@ -14,14 +14,16 @@
  *
  * Termostato Zigbee para caldera con ESP32-C6 Super Mini, 2 relés, un SHT31 y
  * una pantalla táctil de 3,5" para manejarlo también a mano.
- *   - Relé CALDERA:     enciende la caldera (agua caliente sanitaria).
- *   - Relé CALEFACCION: enciende la calefacción. Para calentar hace falta la
- *     caldera, así que mientras la calefacción pide calor el relé CALDERA
- *     también se enciende, aunque el agua caliente esté apagada.
+ *   - Relé CALDERA:     enciende la caldera (y con ella el agua caliente sanitaria).
+ *   - Relé CALEFACCION: enciende la calefacción.
+ *   La calefacción no puede funcionar sin caldera: encender la calefacción
+ *   enciende la caldera, y apagar la caldera apaga la calefacción. La única
+ *   excepción es la calefacción forzada (pruebas), que activa los dos relés
+ *   sin tocar los interruptores.
  *
  * En ZHA aparece "DIY Cheny Termostato" con:
  *   - climate: calefacción (Apagado / Calor, consigna, temperatura actual).
- *   - switch:  agua caliente.
+ *   - switch:  caldera (agua caliente).
  *   - sensor:  temperatura y humedad del SHT31.
  *   - switch:  calefacción forzada (enciende sin mirar la temperatura, para
  *              pruebas o si falla el sensor; se apaga sola a los 30 min).
@@ -45,7 +47,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000003
+#define FW_VERSION      0x00000004
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -249,6 +251,7 @@ void loadConfig() {
   cfg.calibration = prefs.getChar("cal", 0);
   cfg.acsOn       = prefs.getBool("acs", false);
   prefs.end();
+  if (cfg.heatMode) cfg.acsOn = true;   // calefacción sin caldera no es un estado válido
 }
 
 void saveConfig() {
@@ -271,7 +274,7 @@ void markDirty() {
 // ---------------- Relés ----------------
 void applyRelays() {
   bool calef = heatDemand;
-  bool caldera = cfg.acsOn || heatDemand;   // la calefacción necesita la caldera
+  bool caldera = cfg.acsOn || heatDemand;   // heatDemand sin acsOn solo ocurre en modo forzado
   // Al encender: primero la caldera. Al apagar: primero la calefacción.
   if (caldera) digitalWrite(RELAY_CALDERA_PIN, RELAY_ON);
   digitalWrite(RELAY_CALEF_PIN, calef ? RELAY_ON : RELAY_OFF);
@@ -414,6 +417,26 @@ int16_t clampSetpoint(int32_t v) {
   return (int16_t)v;
 }
 
+// Calefacción y caldera van enlazadas: calefacción encendida => caldera encendida
+void setHeatMode(bool on) {
+  cfg.heatMode = on;
+  if (on) cfg.acsOn = true;
+}
+
+void setCaldera(bool on) {
+  cfg.acsOn = on;
+  if (!on) cfg.heatMode = false;
+}
+
+// Publica la configuración y avisa a ZHA del modo y la consigna
+void publishAndReport() {
+  publishConfig();
+  if (Zigbee.connected()) {
+    zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID);
+    zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID);
+  }
+}
+
 void processZigbeeChanges() {
   if (zbChanged) {
     zbChanged = false;
@@ -426,7 +449,9 @@ void processZigbeeChanges() {
     if (cfg.minLimit > cfg.maxLimit) { cfg.maxLimit = cfg.minLimit; fix = true; }
 
     if (mask & (1 << P_MODE)) {
-      cfg.heatMode = zbPending[P_MODE] != ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF;
+      bool wasAcs = cfg.acsOn;
+      setHeatMode(zbPending[P_MODE] != ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF);
+      if (cfg.acsOn != wasAcs) fix = true;   // publica que la caldera se ha encendido
       // Solo se admite Apagado / Calor: cualquier otro modo se corrige a Calor
       if (cfg.heatMode && zbPending[P_MODE] != ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_HEAT) fix = true;
       Serial.printf("Modo: %s\n", cfg.heatMode ? "CALOR" : "APAGADO");
@@ -446,14 +471,9 @@ void processZigbeeChanges() {
       readSensor();   // aplica la calibración ya
     }
 
-    if (fix) {
-      publishConfig();
-      if (Zigbee.connected()) {
-        zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID);
-        zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID);
-      }
-    }
+    if (fix) publishAndReport();
     markDirty();
+    applyRelays();
     regulate();
   }
 
@@ -469,21 +489,25 @@ void processZigbeeChanges() {
 
   if (zbAcsChanged) {
     zbAcsChanged = false;
-    cfg.acsOn = zbAcsValue;
-    Serial.printf("Agua caliente: %s\n", cfg.acsOn ? "ON" : "OFF");
-    applyRelays();
-    markDirty();
+    if (zbAcsValue != cfg.acsOn) {
+      bool wasHeat = cfg.heatMode;
+      setCaldera(zbAcsValue);
+      Serial.printf("Caldera: %s\n", cfg.acsOn ? "ON" : "OFF");
+      if (cfg.heatMode != wasHeat) {
+        Serial.println("Caldera apagada: calefacción apagada");
+        publishAndReport();
+      }
+      applyRelays();
+      regulate();
+      markDirty();
+    }
   }
 }
 
 // ---------------- Pantalla ----------------
 // Cambio hecho desde la pantalla: aplicarlo y avisar a ZHA
 void localConfigChanged() {
-  publishConfig();
-  if (Zigbee.connected()) {
-    zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID);
-    zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID);
-  }
+  publishAndReport();
   applyRelays();
   regulate();
   markDirty();
@@ -500,13 +524,13 @@ void handleUi() {
       localConfigChanged();
       break;
     case UI_TOGGLE_HEAT:
-      cfg.heatMode = !cfg.heatMode;
+      setHeatMode(!cfg.heatMode);
       Serial.printf("Pantalla -> modo %s\n", cfg.heatMode ? "CALOR" : "APAGADO");
       localConfigChanged();
       break;
     case UI_TOGGLE_ACS:
-      cfg.acsOn = !cfg.acsOn;
-      Serial.printf("Pantalla -> agua caliente %s\n", cfg.acsOn ? "ON" : "OFF");
+      setCaldera(!cfg.acsOn);
+      Serial.printf("Pantalla -> caldera %s\n", cfg.acsOn ? "ON" : "OFF");
       localConfigChanged();
       break;
     default: break;
@@ -521,7 +545,6 @@ void handleUi() {
   s.sensorOk = sensorOk;
   s.heatMode = cfg.heatMode;
   s.heating = heatDemand;
-  s.caldera = cfg.acsOn || heatDemand;
   s.setpoint = cfg.setpoint;
   s.acs = cfg.acsOn;
   s.connected = Zigbee.connected();

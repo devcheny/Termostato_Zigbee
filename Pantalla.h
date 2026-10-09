@@ -102,9 +102,8 @@ struct UiState {
   bool    sensorOk;
   bool    heatMode;    // calefacción en modo Calor
   bool    heating;     // relé de calefacción activo
-  bool    caldera;     // relé de caldera activo
   int16_t setpoint;    // 0,01 ºC
-  bool    acs;         // agua caliente pedida
+  bool    acs;         // caldera (agua caliente) encendida
   bool    connected;   // red Zigbee
   bool    ota;         // descargando firmware
   bool    forced;      // calefacción forzada desde HA
@@ -188,10 +187,6 @@ void drawTop(const UiState &s) {
   lcd.setTextColor(C_TEXT);
   lcd.drawString(s.ota ? "Actualizando..." : (s.connected ? "Zigbee" : "Sin red"), 30, 19);
 
-  lcd.fillCircle(212, 18, 6, s.caldera ? C_ORANGE : C_DIM);
-  lcd.setTextColor(s.caldera ? C_TEXT : C_DIM);
-  lcd.drawString("Caldera", 226, 19);
-
   char buf[16];
   if (s.sensorOk) snprintf(buf, sizeof(buf), "Hum %.0f%%", s.hum);
   else strcpy(buf, "Hum --");
@@ -239,7 +234,7 @@ void drawSetpoint(const UiState &s) {
 void drawButtons(const UiState &s, bool heat, bool acs) {
   if (heat) drawButton(B_HEAT, "Radiadores", s.heatMode ? "ENCENDIDA" : "APAGADA",
                        s.heatMode ? C_ORANGE : C_PANEL, s.heatMode ? C_BG : C_TEXT);
-  if (acs)  drawButton(B_ACS, "Agua caliente", s.acs ? "ENCENDIDA" : "APAGADA",
+  if (acs)  drawButton(B_ACS, "Caldera", s.acs ? "ENCENDIDA" : "APAGADA",
                        s.acs ? C_BLUE : C_PANEL, s.acs ? C_BG : C_TEXT);
 }
 
@@ -314,7 +309,7 @@ void uiUpdate(const UiState &s) {
   // Redondeo a lo que se ve en pantalla para no repintar por centésimas
   auto t10 = [](float v) { return (int)lroundf(v * 10); };
 
-  if (all || s.connected != prev.connected || s.ota != prev.ota || s.caldera != prev.caldera ||
+  if (all || s.connected != prev.connected || s.ota != prev.ota ||
       s.sensorOk != prev.sensorOk || (int)lroundf(s.hum) != (int)lroundf(prev.hum))
     drawTop(s);
   if (all || s.sensorOk != prev.sensorOk || t10(s.temp) != t10(prev.temp) || s.heatMode != prev.heatMode || s.heating != prev.heating ||
