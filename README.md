@@ -130,7 +130,16 @@ arduino-cli compile --upload -b "esp32:esp32:esp32c6:ZigbeeMode=ed,PartitionSche
 
 1. En HA: **Ajustes → Dispositivos y servicios → Zigbee Home Automation → Añadir dispositivo**.
 2. Alimenta el ESP32. El LED RGB parpadea en **azul** mientras busca red.
-3. Cuando se une, el LED se apaga y aparece **DIY Cheny Termostato**. Renombra las entidades (p. ej. "Calefacción" y "Agua caliente").
+3. Cuando se une, el LED se apaga y aparece **DIY Cheny Termostato**.
+4. Renombra las entidades: en el dispositivo, entra en cada entidad → engranaje → **Nombre** e **ID de entidad**. Por ejemplo:
+
+   | Entidad que crea ZHA | Nombre | ID de entidad |
+   |---|---|---|
+   | climate | Calefacción | `climate.calefaccion` |
+   | interruptor del endpoint 11 (agua caliente) | Caldera | `switch.caldera` |
+   | interruptor del endpoint 13 (forzada) | Calefacción forzada | `switch.calefaccion_forzada` |
+
+   Con ZHA el firmware no puede poner estos nombres, así que hay que hacerlo a mano una vez. Se conservan en todas las actualizaciones OTA. Solo se pierden si eliminas el dispositivo de ZHA, así que hazlo después del último reemparejado.
 
 **Volver a emparejar:** mantén pulsado **BOOT** 3 s. El LED se pone rojo, los relés se apagan, se borra la red Zigbee y se reinicia en modo emparejamiento. Hazlo también si lo quitas de ZHA.
 
