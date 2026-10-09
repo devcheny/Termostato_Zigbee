@@ -1,0 +1,75 @@
+# Compila el firmware y publica la OTA para ZHA cada vez que sube FW_VERSION.
+#
+# Al hacer push a main lee FW_VERSION del .ino. Si ya hay una release "fw-XXXXXXXX"
+# con esa versión no hace nada; si no, compila, genera el .ota y el index.json y crea
+# la release. ZHA lee siempre el index.json de la última release:
+#   https://github.com/<usuario>/<repo>/releases/latest/download/index.json
+name: Firmware OTA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ESP32_CORE: esp32:esp32@3.3.12
+  ESP32_INDEX: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+  LIBS: LovyanGFX@1.2.32
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Termostato_Zigbee   # arduino-cli exige que la carpeta se llame como el .ino
+
+      - name: Leer FW_VERSION
+        id: ver
+        run: |
+          v=$(grep -oP '^#define\s+FW_VERSION\s+0x\K[0-9A-Fa-f]{8}' Termostato_Zigbee/Termostato_Zigbee.ino)
+          v=${v^^}
+          echo "tag=fw-$v" >> "$GITHUB_OUTPUT"
+          if gh release view "fw-$v" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::notice::FW_VERSION 0x$v ya está publicada. Sube FW_VERSION para sacar una versión nueva."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.ver.outputs.skip != 'true'
+        uses: arduino/setup-arduino-cli@v2
+
+      - if: steps.ver.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+          key: arduino-${{ env.ESP32_CORE }}-${{ env.LIBS }}
+
+      - if: steps.ver.outputs.skip != 'true'
+        name: Instalar core y librerías
+        run: |
+          arduino-cli core update-index --additional-urls "$ESP32_INDEX"
+          arduino-cli core install "$ESP32_CORE" --additional-urls "$ESP32_INDEX"
+          arduino-cli lib install $LIBS
+
+      - if: steps.ver.outputs.skip != 'true'
+        name: Compilar y generar OTA
+        run: >
+          python3 Termostato_Zigbee/make_ota.py --build
+          --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/${{ steps.ver.outputs.tag }}/"
+
+      - if: steps.ver.outputs.skip != 'true'
+        name: Publicar release
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" Termostato_Zigbee/ota/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Firmware ${{ steps.ver.outputs.tag }}" \
+            --notes "$(git -C Termostato_Zigbee log -1 --pretty=%B)" \
+            --latest
