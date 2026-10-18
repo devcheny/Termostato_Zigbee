@@ -116,9 +116,10 @@ struct UiState {
   float   tempExt;     // ºC externa recibida de HA (vale si extOk)
   bool    extOk;       // la temperatura externa es reciente
   uint16_t minCycle;   // ciclo mínimo de la caldera, décimas de minuto
+  uint16_t hysteresis; // histéresis, centésimas de ºC
 };
 
-enum UiAction { UI_NONE, UI_SP_DOWN, UI_SP_UP, UI_TOGGLE_HEAT, UI_TOGGLE_ACS, UI_SRC_INT, UI_SRC_EXT, UI_CYC_DOWN, UI_CYC_UP };
+enum UiAction { UI_NONE, UI_SP_DOWN, UI_SP_UP, UI_TOGGLE_HEAT, UI_TOGGLE_ACS, UI_SRC_INT, UI_SRC_EXT, UI_CYC_DOWN, UI_CYC_UP, UI_HYS_DOWN, UI_HYS_UP };
 
 namespace ui {
 
@@ -149,11 +150,14 @@ const Rect B_ACS   = { 244, 238, 228, 76 };
 const Rect B_MENU  = { 170, 2, 140, 32 };    // "Ajustes", en la barra superior
 // Pantalla de ajustes
 const Rect B_BACK      = { 4, 2, 140, 32 };
-const Rect B_SRC_INT   = { 8, 72, 228, 76 };
-const Rect B_SRC_EXT   = { 244, 72, 228, 76 };
-const Rect B_CYC_MINUS = { 8, 206, 100, 76 };
-const Rect B_CYC_PLUS  = { 372, 206, 100, 76 };
-const Rect R_CYC       = { 116, 206, 248, 76 };
+const Rect B_SRC_INT   = { 8, 64, 228, 60 };
+const Rect B_SRC_EXT   = { 244, 64, 228, 60 };
+const Rect B_CYC_MINUS = { 8, 156, 100, 60 };
+const Rect B_CYC_PLUS  = { 372, 156, 100, 60 };
+const Rect R_CYC       = { 116, 156, 248, 60 };
+const Rect B_HYS_MINUS = { 8, 248, 100, 60 };
+const Rect B_HYS_PLUS  = { 372, 248, 100, 60 };
+const Rect R_HYS       = { 116, 248, 248, 60 };
 
 enum Screen { SCR_MAIN, SCR_MENU };
 Screen screen = SCR_MAIN;
@@ -191,11 +195,11 @@ void drawButton(const Rect &r, const char *label, const char *state, uint32_t fi
   lcd.setTextDatum(textdatum_t::middle_center);
   if (state) {
     lcd.setFont(&fonts::DejaVu18);
-    lcd.drawString(label, r.x + r.w / 2, r.y + 22);
+    lcd.drawString(label, r.x + r.w / 2, r.y + r.h * 29 / 100);
     lcd.setFont(&fonts::DejaVu24);
-    lcd.drawString(state, r.x + r.w / 2, r.y + 52);
+    lcd.drawString(state, r.x + r.w / 2, r.y + r.h * 68 / 100);
   } else {
-    lcd.setFont(&fonts::DejaVu56);
+    lcd.setFont(r.h >= 70 ? &fonts::DejaVu56 : &fonts::DejaVu40);
     lcd.drawString(label, r.x + r.w / 2, r.y + r.h / 2 + 2);
   }
 }
@@ -288,11 +292,11 @@ void drawMenuTop() {
 }
 
 void drawMenuSource(const UiState &s) {
-  lcd.fillRect(0, 40, 480, 116, C_BG);
+  lcd.fillRect(0, 38, 480, 90, C_BG);
   lcd.setFont(&fonts::DejaVu18);
   lcd.setTextDatum(textdatum_t::middle_center);
   lcd.setTextColor(C_DIM);
-  lcd.drawString("Termometro para regular", 240, 56);
+  lcd.drawString("Termometro para regular", 240, 51);
   char a[16], b[16];
   if (s.humOk) snprintf(a, sizeof(a), "%.1f C", s.tempInt);
   else strcpy(a, "sin datos");
@@ -302,24 +306,35 @@ void drawMenuSource(const UiState &s) {
   drawButton(B_SRC_EXT, "Externo", b, s.extSelected ? C_BLUE : C_PANEL, s.extSelected ? C_BG : C_TEXT);
 }
 
-void drawMenuCycle(const UiState &s, bool buttons) {
+// Fila de ajuste numérico: título, - valor +
+void drawMenuValue(const char *title, const char *value, const Rect &minus, const Rect &val, const Rect &plus, bool buttons) {
   if (buttons) {
-    lcd.fillRect(0, 160, 480, 160, C_BG);
+    lcd.fillRect(0, val.y - 28, 480, val.h + 30, C_BG);
     lcd.setFont(&fonts::DejaVu18);
     lcd.setTextDatum(textdatum_t::middle_center);
     lcd.setTextColor(C_DIM);
-    lcd.drawString("Ciclo minimo caldera", 240, 186);
-    drawButton(B_CYC_MINUS, "-", nullptr, C_PANEL, C_TEXT);
-    drawButton(B_CYC_PLUS, "+", nullptr, C_PANEL, C_TEXT);
-    lcd.drawString("Tiempo minimo encendida o apagada", 240, 300);
+    lcd.drawString(title, 240, val.y - 14);
+    drawButton(minus, "-", nullptr, C_PANEL, C_TEXT);
+    drawButton(plus, "+", nullptr, C_PANEL, C_TEXT);
   }
-  lcd.fillRect(R_CYC.x, R_CYC.y, R_CYC.w, R_CYC.h, C_BG);
-  char buf[16];
-  snprintf(buf, sizeof(buf), "%.1f min", s.minCycle / 10.0f);
+  lcd.fillRect(val.x, val.y, val.w, val.h, C_BG);
   lcd.setFont(&fonts::DejaVu40);
   lcd.setTextDatum(textdatum_t::middle_center);
   lcd.setTextColor(C_TEXT);
-  lcd.drawString(buf, R_CYC.x + R_CYC.w / 2, R_CYC.y + R_CYC.h / 2 + 2);
+  lcd.drawString(value, val.x + val.w / 2, val.y + val.h / 2 + 2);
+}
+
+void drawMenuCycle(const UiState &s, bool buttons) {
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%.1f min", s.minCycle / 10.0f);
+  drawMenuValue("Ciclo minimo caldera (encendida o apagada)", buf, B_CYC_MINUS, R_CYC, B_CYC_PLUS, buttons);
+}
+
+void drawMenuHyst(const UiState &s, bool buttons) {
+  char buf[16];
+  if (s.hysteresis % 10 == 0) snprintf(buf, sizeof(buf), "%.1f C", s.hysteresis / 100.0f);
+  else snprintf(buf, sizeof(buf), "%.2f C", s.hysteresis / 100.0f);
+  drawMenuValue("Histeresis (margen sobre la consigna)", buf, B_HYS_MINUS, R_HYS, B_HYS_PLUS, buttons);
 }
 
 // ---------------- Calibración del táctil ----------------
@@ -460,6 +475,8 @@ void uiUpdate(const UiState &s) {
       drawMenuSource(s);
     if (all || s.minCycle != prev.minCycle)
       drawMenuCycle(s, all);
+    if (all || s.hysteresis != prev.hysteresis)
+      drawMenuHyst(s, all);
     prev = s;
     drawn = true;
     return;
@@ -529,6 +546,8 @@ UiAction uiPoll() {
     else if (B_SRC_EXT.hit(x, y))   a = UI_SRC_EXT;
     else if (B_CYC_MINUS.hit(x, y)) a = UI_CYC_DOWN;
     else if (B_CYC_PLUS.hit(x, y))  a = UI_CYC_UP;
+    else if (B_HYS_MINUS.hit(x, y)) a = UI_HYS_DOWN;
+    else if (B_HYS_PLUS.hit(x, y))  a = UI_HYS_UP;
   } else {
     if (B_MINUS.hit(x, y))     a = UI_SP_DOWN;
     else if (B_PLUS.hit(x, y)) a = UI_SP_UP;
@@ -537,7 +556,7 @@ UiAction uiPoll() {
     else if (B_MENU.hit(x, y)) screen = SCR_MENU;
   }
 
-  if (a == UI_SP_DOWN || a == UI_SP_UP || a == UI_CYC_DOWN || a == UI_CYC_UP) {
+  if (a == UI_SP_DOWN || a == UI_SP_UP || a == UI_CYC_DOWN || a == UI_CYC_UP || a == UI_HYS_DOWN || a == UI_HYS_UP) {
     repeatAction = a;
     nextRepeat = now + 500;
   }

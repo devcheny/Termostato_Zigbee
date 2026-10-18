@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000013
+#define FW_VERSION      0x00000014
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -92,8 +92,13 @@
 #define EP_EXT_TEMP    14
 #define EP_EXT_SELECT  15
 #define EP_MIN_CYCLE   16
+#define EP_HYSTERESIS  17
 
-#define HYSTERESIS        0.3f      // ºC por debajo / encima de la consigna
+#define HYST_DEFAULT      30        // histéresis: centésimas de ºC por debajo / encima de la consigna; se cambia desde HA o la pantalla
+#define HYST_MIN          10        // 0,1 ºC
+#define HYST_MAX          300       // 3 ºC
+#define HYST_UI_STEP      10        // paso en la pantalla: 0,1 ºC
+#define HYST_STEP         0.01f     // paso en HA (más de 256 pasos: casilla en vez de deslizador)
 #define MIN_CYCLE_DEFAULT 3         // minutos mínimos encendida/apagada (protege la caldera); se cambia desde HA
 #define MIN_CYCLE_MAX     30
 #define MIN_CYCLE_UI_STEP 5         // paso en la pantalla: 0,5 min (en décimas)
@@ -414,6 +419,7 @@ private:
 
 ZigbeeNumber zbExtTemp(EP_EXT_TEMP, "Temperatura externa", -20, 60, 0.1, 62);              // ºC
 ZigbeeNumber zbMinCycle(EP_MIN_CYCLE, "Ciclo mínimo caldera", 0, MIN_CYCLE_MAX, MIN_CYCLE_STEP, 72);    // minutos
+ZigbeeNumber zbHyst(EP_HYSTERESIS, "Histéresis", HYST_MIN / 100.0f, HYST_MAX / 100.0f, HYST_STEP, 62);  // ºC
 ZigbeeNamedSwitch       zbExtSelect(EP_EXT_SELECT, "Usar sensor externo");
 
 // ---------------- Estado ----------------
@@ -425,6 +431,7 @@ struct Config {
   bool    acsOn;        // caldera (agua caliente) encendida
   bool    useExternal;  // regular con el sensor externo
   uint16_t minCycle;    // décimas de minuto mínimas entre encendido y apagado de la calefacción
+  uint16_t hysteresis;  // centésimas de ºC: enciende en consigna - h, apaga en consigna + h
 };
 Config cfg;
 
@@ -468,6 +475,8 @@ volatile bool zbExtSelChanged = false;
 volatile bool zbExtSelValue = false;
 volatile bool zbMinCycleChanged = false;
 volatile float zbMinCycleValue = 0;
+volatile bool zbHystChanged = false;
+volatile float zbHystValue = 0;
 
 // ---------------- Persistencia ----------------
 void loadConfig() {
@@ -482,6 +491,8 @@ void loadConfig() {
   // "cyc" (minutos enteros) es de versiones anteriores a 0x0C
   cfg.minCycle    = prefs.getUShort("cyc10", prefs.getUChar("cyc", MIN_CYCLE_DEFAULT) * 10);
   if (cfg.minCycle > MIN_CYCLE_MAX * 10) cfg.minCycle = MIN_CYCLE_DEFAULT * 10;
+  cfg.hysteresis  = prefs.getUShort("hys", HYST_DEFAULT);
+  if (cfg.hysteresis < HYST_MIN || cfg.hysteresis > HYST_MAX) cfg.hysteresis = HYST_DEFAULT;
   prefs.end();
   if (cfg.heatMode) cfg.acsOn = true;   // calefacción sin caldera no es un estado válido
 }
@@ -496,6 +507,7 @@ void saveConfig() {
   prefs.putBool("acs", cfg.acsOn);
   prefs.putBool("ext", cfg.useExternal);
   prefs.putUShort("cyc10", cfg.minCycle);
+  prefs.putUShort("hys", cfg.hysteresis);
   prefs.end();
   Serial.println("Configuración guardada");
 }
@@ -563,8 +575,9 @@ void regulate() {
   }
   float sp = cfg.setpoint / 100.0f;
   bool want = heatDemand;
-  if (ctrlTemp <= sp - HYSTERESIS) want = true;
-  else if (ctrlTemp >= sp + HYSTERESIS) want = false;
+  float hyst = cfg.hysteresis / 100.0f;
+  if (ctrlTemp <= sp - hyst) want = true;
+  else if (ctrlTemp >= sp + hyst) want = false;
   setHeatDemand(want);
 }
 
@@ -664,6 +677,11 @@ void onExtTemp(float value) {
 void onMinCycle(float value) {
   zbMinCycleValue = value;
   zbMinCycleChanged = true;
+}
+
+void onHyst(float value) {
+  zbHystValue = value;
+  zbHystChanged = true;
 }
 
 void onExtSelect(bool state) {
@@ -811,6 +829,18 @@ void processZigbeeChanges() {
       markDirty();
     }
   }
+
+  if (zbHystChanged) {
+    zbHystChanged = false;
+    long v = constrain(lroundf(zbHystValue * 100), (long)HYST_MIN, (long)HYST_MAX);
+    if (v != cfg.hysteresis) {
+      cfg.hysteresis = v;
+      Serial.printf("Histéresis: %.2f ºC\n", cfg.hysteresis / 100.0f);
+      regulate();
+      markDirty();
+    }
+    zbHyst.set(cfg.hysteresis / 100.0f);   // por si se ha recortado al rango
+  }
 }
 
 // ---------------- Pantalla ----------------
@@ -867,6 +897,21 @@ void handleUi() {
       }
       break;
     }
+    case UI_HYS_DOWN:
+    case UI_HYS_UP: {
+      // Pasos de 0,1 ºC, ajustando a múltiplo de 0,1 si desde HA se puso otro valor
+      int v = a == UI_HYS_UP ? (cfg.hysteresis / HYST_UI_STEP + 1) * HYST_UI_STEP
+                             : ((cfg.hysteresis + HYST_UI_STEP - 1) / HYST_UI_STEP - 1) * HYST_UI_STEP;
+      v = constrain(v, HYST_MIN, HYST_MAX);
+      if (v != cfg.hysteresis) {
+        cfg.hysteresis = v;
+        Serial.printf("Pantalla -> histéresis %.2f ºC\n", cfg.hysteresis / 100.0f);
+        zbHyst.set(cfg.hysteresis / 100.0f);
+        regulate();
+        markDirty();
+      }
+      break;
+    }
     default: break;
   }
 
@@ -893,6 +938,7 @@ void handleUi() {
   s.tempExt = extTemp;
   s.extOk = extValid();
   s.minCycle = cfg.minCycle;
+  s.hysteresis = cfg.hysteresis;
   uiUpdate(s);
 }
 
@@ -1024,6 +1070,9 @@ void setup() {
   zbMinCycle.setManufacturerAndModel(MANUFACTURER, MODEL);
   zbMinCycle.onChange(onMinCycle);
 
+  zbHyst.setManufacturerAndModel(MANUFACTURER, MODEL);
+  zbHyst.onChange(onHyst);
+
   zbExtSelect.setManufacturerAndModel(MANUFACTURER, MODEL);
   zbExtSelect.onChange(onExtSelect);
 
@@ -1038,6 +1087,7 @@ void setup() {
   Zigbee.addEndpoint(&zbExtTemp);
   Zigbee.addEndpoint(&zbExtSelect);
   Zigbee.addEndpoint(&zbMinCycle);
+  Zigbee.addEndpoint(&zbHyst);
 
   // End device con la radio siempre escuchando: responde al instante sin hacer de router
   Zigbee.setRxOnWhenIdle(true);
@@ -1054,6 +1104,8 @@ void setup() {
   zbExtTemp.enableReports();
   zbMinCycle.enableReports();
   zbMinCycle.set(cfg.minCycle / 10.0f);   // valor guardado, para que HA lo vea
+  zbHyst.enableReports();
+  zbHyst.set(cfg.hysteresis / 100.0f);
   publishConfig();
   zbSensor.setReporting(30, 300, 0.2);
   zbSensor.setHumidityReporting(30, 300, 2);
@@ -1082,6 +1134,7 @@ void loop() {
     zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID);
     zbExtTemp.reportCapabilities();
     zbMinCycle.reportCapabilities();
+    zbHyst.reportCapabilities();
     zbThermostat.requestOTAUpdate();   // primera consulta en ~1 min, luego cada hora
   }
   zbReady = ready;

@@ -12,6 +12,7 @@ En ZHA aparece un dispositivo **DIY Cheny Termostato** con:
 | `number` | Temperatura externa: HA escribe aquí la de otro sensor (ver "Sensor externo") | 14 |
 | `switch` | Usar sensor externo para regular, en vez del SHT31 | 15 |
 | `number` | Ciclo mínimo caldera: minutos mínimos entre encendido y apagado (0-30, admite décimas) | 16 |
+| `number` | Histéresis: margen en °C por debajo y por encima de la consigna (0,1-3) | 17 |
 | `update` | Firmware: avisa cuando hay versión nueva y la instala | 10 |
 
 ## Lógica de los relés
@@ -34,7 +35,7 @@ Al encender, primero entra el relé de la caldera; al apagar, primero sale el de
 
 La regulación la hace el ESP32, no HA:
 
-- Enciende cuando la temperatura baja **0,3 °C** por debajo de la consigna y apaga cuando sube 0,3 °C por encima (`HYSTERESIS`).
+- Enciende cuando la temperatura baja **0,3 °C** por debajo de la consigna y apaga cuando sube 0,3 °C por encima. Ese margen (histéresis) se cambia desde HA con **Histéresis** (0,1 a 3 °C) o desde **Ajustes** en la pantalla, y se guarda en el ESP32. Más margen: menos arranques de la caldera, pero más diferencia de temperatura.
 - El relé de la caldera pasa al menos **3 minutos** encendido o apagado antes de volver a cambiar, para no hacer ciclos cortos en la caldera. Se cambia desde HA con **Ciclo mínimo caldera** (0 a 30 minutos, con décimas; 0 para pruebas) o desde **Ajustes** en la pantalla y se guarda en el ESP32. HA lo muestra como casilla para escribir el valor, no como deslizador.
 - Los radiadores no tienen ciclo mínimo: se encienden y apagan al momento, pero solo con la caldera encendida. Si piden calor con la caldera esperando a su ciclo mínimo, arrancan en cuanto ella encienda (en pantalla: «Esperando a la caldera»).
 - Mientras la caldera espera al ciclo mínimo, su botón en la pantalla se pone marrón y muestra la cuenta atrás («Enciende 2:35» o «Apaga 2:35»). Si apagas la caldera durante el ciclo mínimo, los radiadores se apagan al momento y la caldera cuando acabe la cuenta.
@@ -63,6 +64,7 @@ Pantalla de 3,5" 320×480 SPI con táctil resistivo (la que viene con lápiz).
 - **Ajustes** (barra superior): abre una pantalla con:
   - **Termómetro para regular**: botones **Interno** (SHT31) y **Externo**, cada uno con su temperatura actual. El elegido sale en azul.
   - **Ciclo mínimo caldera**: − / + de 0,5 en 0,5 minutos (0 a 30). Si mantienes pulsado, repite.
+  - **Histéresis**: − / + de 0,1 en 0,1 °C (0,1 a 3).
   - **< Volver** regresa a la pantalla principal; también vuelve sola cuando la pantalla se apaga.
   - Lo que cambies aquí se ve en HA, igual que si lo cambias desde HA.
 - Lo que cambies en la pantalla se ve en HA al momento, y al revés.
@@ -162,6 +164,7 @@ ZHA no crea selectores para dispositivos genéricos y no consigue leer el nombre
 | 15 | switch "Usar sensor externo" | select **Sensor de temperatura**: Integrado / Externo |
 | 14 | number sin nombre | number **Temperatura externa** (°C, -20 a 60) |
 | 16 | number sin nombre | number **Ciclo mínimo caldera** (min, 0 a 30), en Configuración |
+| 17 | number sin nombre | number **Histéresis** (°C, 0,1 a 3), en Configuración |
 
 Instalación:
 1. Copia el archivo a `/config/custom_zha_quirks/` en Home Assistant.
@@ -359,5 +362,5 @@ Para probar una versión sin publicarla:
 ## Notas
 
 - Funciona como **end device** con la radio siempre escuchando, igual que `Luz_Plantas_ESP32`. No repite la señal Zigbee. Si necesitas que haga de router, cambia a `Zigbee mode: Zigbee ZCZR` y `Zigbee.begin(ZIGBEE_ROUTER)`.
-- Las constantes de ajuste están al principio del sketch: `HYSTERESIS`, `MIN_CYCLE_DEFAULT`, pines, intervalos de lectura y envío. Las de la pantalla (pines, brillo, paso de la consigna) están al principio de [Pantalla.h](Pantalla.h).
+- Las constantes de ajuste están al principio del sketch: `HYST_DEFAULT`, `MIN_CYCLE_DEFAULT`, pines, intervalos de lectura y envío. Las de la pantalla (pines, brillo, paso de la consigna) están al principio de [Pantalla.h](Pantalla.h).
 - Si apagas la caldera y la vuelves a encender enseguida, tarda en encender lo que marque **Ciclo mínimo caldera** (3 minutos por defecto); la cuenta atrás sale en su botón. Para pruebas, ponlo a 0.
