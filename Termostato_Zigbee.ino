@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x0000000C
+#define FW_VERSION      0x0000000D
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -442,6 +442,7 @@ bool ctrlIsExternal = false;
 bool heatDemand = false;             // la calefacción pide calor (histéresis)
 unsigned long lastHeatSwitch = 0;
 bool heatSwitchedOnce = false;
+bool heatWaiting = false;            // hay un cambio de la calefacción esperando al ciclo mínimo
 
 Preferences prefs;
 unsigned long lastChange = 0;
@@ -526,6 +527,7 @@ void setHeatDemand(bool on) {
 }
 
 void regulate() {
+  heatWaiting = false;
   // Apagado o sensor sin datos: corta al momento (sin esperar el ciclo mínimo)
   if (!cfg.heatMode || !ctrlOk) {
     setHeatDemand(false);
@@ -536,8 +538,18 @@ void regulate() {
   if (ctrlTemp <= sp - HYSTERESIS) want = true;
   else if (ctrlTemp >= sp + HYSTERESIS) want = false;
 
-  if (want != heatDemand && heatSwitchedOnce && millis() - lastHeatSwitch < cfg.minCycle * 6000UL) return;
+  if (want != heatDemand && heatSwitchedOnce && millis() - lastHeatSwitch < cfg.minCycle * 6000UL) {
+    heatWaiting = true;
+    return;
+  }
   setHeatDemand(want);
+}
+
+// Segundos que faltan para que la calefacción pueda cambiar (0 si no espera nada)
+uint32_t heatWaitSecs() {
+  if (!heatWaiting) return 0;
+  unsigned long total = cfg.minCycle * 6000UL, elapsed = millis() - lastHeatSwitch;
+  return elapsed >= total ? 0 : (total - elapsed + 999) / 1000;
 }
 
 // ---------------- Sensor ----------------
@@ -835,6 +847,7 @@ void handleUi() {
   s.extActive = ctrlIsExternal;
   s.heatMode = cfg.heatMode;
   s.heating = heatDemand;
+  s.waitSecs = heatWaitSecs();
   s.setpoint = cfg.setpoint;
   s.acs = cfg.acsOn;
   s.connected = Zigbee.connected();
@@ -1039,6 +1052,8 @@ void loop() {
     readSensor();
     regulate();
   }
+  // Fin del ciclo mínimo: aplicar el cambio pendiente sin esperar a la próxima lectura
+  if (heatWaiting && heatWaitSecs() == 0) regulate();
 
   static unsigned long lastReport = 0;
   if (now - lastReport > REPORT_INTERVAL_MS) {

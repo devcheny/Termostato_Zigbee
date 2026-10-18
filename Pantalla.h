@@ -105,6 +105,7 @@ struct UiState {
   bool    extActive;   // se está usando el externo (si no llega, se usa el SHT31)
   bool    heatMode;    // calefacción en modo Calor
   bool    heating;     // relé de calefacción activo
+  uint32_t waitSecs;   // segundos hasta que la calefacción pueda cambiar (ciclo mínimo); 0 = nada pendiente
   int16_t setpoint;    // 0,01 ºC
   bool    acs;         // caldera (agua caliente) encendida
   bool    connected;   // red Zigbee
@@ -126,6 +127,7 @@ const uint32_t C_ORANGE = 0xFF8C1A;
 const uint32_t C_BLUE   = 0x2E9BFF;
 const uint32_t C_RED    = 0xFF4040;
 const uint32_t C_GREEN  = 0x3CCB6A;
+const uint32_t C_WAIT   = 0x7A4A10;   // botón esperando al ciclo mínimo
 
 struct Rect {
   int16_t x, y, w, h;
@@ -239,7 +241,13 @@ void drawSetpoint(const UiState &s) {
 }
 
 void drawButtons(const UiState &s, bool heat, bool acs) {
-  if (heat) drawButton(B_HEAT, "Radiadores", s.heatMode ? "ENCENDIDA" : "APAGADA",
+  if (heat && s.waitSecs) {
+    // Cambio retenido por el ciclo mínimo de la caldera: cuenta atrás en el botón
+    char buf[20];
+    snprintf(buf, sizeof(buf), "%s %lu:%02lu", s.heating ? "Apaga" : "Arranca",
+             (unsigned long)(s.waitSecs / 60), (unsigned long)(s.waitSecs % 60));
+    drawButton(B_HEAT, "Radiadores", buf, C_WAIT, C_TEXT);
+  } else if (heat) drawButton(B_HEAT, "Radiadores", s.heatMode ? "ENCENDIDA" : "APAGADA",
                        s.heatMode ? C_ORANGE : C_PANEL, s.heatMode ? C_BG : C_TEXT);
   if (acs)  drawButton(B_ACS, "Caldera", s.acs ? "ENCENDIDA" : "APAGADA",
                        s.acs ? C_BLUE : C_PANEL, s.acs ? C_BG : C_TEXT);
@@ -328,7 +336,8 @@ void uiUpdate(const UiState &s) {
     drawButton(B_MINUS, "-", nullptr, C_PANEL, C_TEXT);
     drawButton(B_PLUS, "+", nullptr, C_PANEL, C_TEXT);
   }
-  drawButtons(s, all || s.heatMode != prev.heatMode, all || s.acs != prev.acs);
+  drawButtons(s, all || s.heatMode != prev.heatMode || s.heating != prev.heating || s.waitSecs != prev.waitSecs,
+              all || s.acs != prev.acs);
 
   prev = s;
   drawn = true;
