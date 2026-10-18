@@ -63,10 +63,10 @@ Pantalla de 3,5" 320×480 SPI con táctil resistivo (la que viene con lápiz).
 - **Ajustes** (barra superior): abre una pantalla con:
   - **Termómetro para regular**: botones **Interno** (SHT31) y **Externo**, cada uno con su temperatura actual. El elegido sale en azul.
   - **Ciclo mínimo caldera**: − / + de 0,5 en 0,5 minutos (0 a 30). Si mantienes pulsado, repite.
-  - **< Volver** regresa a la pantalla principal; también vuelve sola cuando la pantalla baja el brillo.
+  - **< Volver** regresa a la pantalla principal; también vuelve sola cuando la pantalla se apaga.
   - Lo que cambies aquí se ve en HA, igual que si lo cambias desde HA.
 - Lo que cambies en la pantalla se ve en HA al momento, y al revés.
-- Tras 30 s sin tocarla baja el brillo (`DIM_AFTER_MS`, `BL_DIM`). El primer toque solo la enciende, no pulsa ningún botón.
+- Tras 30 s sin tocarla se apaga la retroiluminación, para que dure años encendida día y noche (`DIM_AFTER_MS`; con `BL_DIM` mayor que 0 queda atenuada en vez de apagada). El táctil sigue activo: el primer toque solo la enciende, no pulsa ningún botón.
 - Arriba: estado de la red Zigbee (verde = conectado, rojo = sin red, azul = actualizando firmware) y la humedad.
 
 **Chip de la pantalla:** se vende como "ILI9341", pero un ILI9341 no llega a 320×480. Estas pantallas llevan **ILI9488** (lo más habitual) o **ST7796S**. El sketch viene para ILI9488. Si la pantalla se queda en blanco o la imagen sale mal, comenta `#define PANEL_ILI9488` en [Pantalla.h](Pantalla.h) para usar ST7796S. Si los colores salen invertidos o con rojo y azul cambiados, cambia `PANEL_INVERT` o `PANEL_BGR`.
@@ -113,7 +113,7 @@ ESP32-C6 Super Mini        Pantalla 3,5" SPI
 - 21, 22 y 23 son los agujeros del centro de la placa; 0, 1, 2 y 3 están en la fila izquierda; 20 y 14 en la derecha.
 - **SDO(MISO) de la pantalla se deja sin conectar**: el ILI9488 no suelta esa línea y estropearía las lecturas del táctil. El táctil va por T_DO (T_OUT en algunas placas).
 - **VCC a 5V** si la pantalla lleva su regulador (un chip de 3 patas cerca del conector y el jumper J1 abierto, lo normal en estas placas). Si no lo lleva, a 3V3. Las señales son de 3,3 V en los dos casos.
-- LED controla la retroiluminación a través de un transistor de la propia pantalla, así que el GPIO1 puede regular el brillo. Si no te interesa atenuarla, conecta LED a 3V3.
+- LED controla la retroiluminación a través de un transistor de la propia pantalla, así que el GPIO1 puede regular el brillo. Conéctalo al GPIO1 y no a 3V3: si no, la retroiluminación no se apaga nunca y se gasta antes.
 - Los pines de la tarjeta SD no se usan.
 - El SHT31 se detecta solo en la dirección 0x44 o 0x45. Las placas de SHT31 ya llevan resistencias pull-up en SDA/SCL.
 - Si tus relés se activan con nivel **bajo** (muchos módulos lo llevan marcado como `L` o tienen un jumper H/L), cambia `RELAY_ON` a `LOW` en el sketch.

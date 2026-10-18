@@ -31,7 +31,7 @@
 #define TOUCH_IRQ  3    // T_IRQ
 
 #define BL_ON         255      // brillo normal (0-255)
-#define BL_DIM        15       // brillo en reposo (0 = apagada)
+#define BL_DIM        0        // brillo en reposo (0 = apagada; alarga la vida de la retroiluminación)
 #define DIM_AFTER_MS  30000    // sin tocar este tiempo -> brillo de reposo (y vuelta a la pantalla principal)
 #define SP_STEP       50       // paso de la consigna: 0,5 ºC
 // ---------------------------------------------------------------
