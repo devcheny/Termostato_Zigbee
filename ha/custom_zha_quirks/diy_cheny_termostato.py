@@ -7,7 +7,8 @@ las salidas analógicas del termostato, así que este quirk define esas entidade
     en lugar del interruptor "Usar sensor externo".
   - Endpoint 14 (salida analógica): number "Temperatura externa" (°C).
   - Endpoint 16 (salida analógica): number "Ciclo mínimo caldera" (min).
-  - Endpoint 17 (salida analógica): number "Histéresis" (°C).
+  - Endpoint 17 (salida analógica): number "Margen arranque" (°C bajo la consigna).
+  - Endpoint 18 (salida analógica): number "Margen corte" (°C sobre la consigna).
 
 Instalación: copiar a /config/custom_zha_quirks/ y en configuration.yaml:
 
@@ -80,8 +81,21 @@ class FuenteTemperatura(t.enum8):
         step=0.01,
         unit=UnitOfTemperature.CELSIUS,
         entity_type=EntityType.CONFIG,
-        translation_key="histeresis",
-        fallback_name="Histéresis",
+        translation_key="margen_arranque",
+        fallback_name="Margen arranque",
+    )
+    .prevent_default_entity_creation(endpoint_id=18, cluster_id=AnalogOutput.cluster_id)
+    .number(
+        AnalogOutput.AttributeDefs.present_value.name,
+        AnalogOutput.cluster_id,
+        endpoint_id=18,
+        min_value=0,
+        max_value=3,
+        step=0.01,
+        unit=UnitOfTemperature.CELSIUS,
+        entity_type=EntityType.CONFIG,
+        translation_key="margen_corte",
+        fallback_name="Margen corte",
     )
     .add_to_registry()
 )

@@ -116,10 +116,12 @@ struct UiState {
   float   tempExt;     // ºC externa recibida de HA (vale si extOk)
   bool    extOk;       // la temperatura externa es reciente
   uint16_t minCycle;   // ciclo mínimo de la caldera, décimas de minuto
-  uint16_t hysteresis; // histéresis, centésimas de ºC
+  uint16_t hystOn;     // margen de arranque bajo la consigna, centésimas de ºC
+  uint16_t hystOff;    // margen de corte sobre la consigna, centésimas de ºC
 };
 
-enum UiAction { UI_NONE, UI_SP_DOWN, UI_SP_UP, UI_TOGGLE_HEAT, UI_TOGGLE_ACS, UI_SRC_INT, UI_SRC_EXT, UI_CYC_DOWN, UI_CYC_UP, UI_HYS_DOWN, UI_HYS_UP };
+enum UiAction { UI_NONE, UI_SP_DOWN, UI_SP_UP, UI_TOGGLE_HEAT, UI_TOGGLE_ACS, UI_SRC_INT, UI_SRC_EXT, UI_CYC_DOWN, UI_CYC_UP,
+                UI_HON_DOWN, UI_HON_UP, UI_HOFF_DOWN, UI_HOFF_UP };
 
 namespace ui {
 
@@ -155,9 +157,13 @@ const Rect B_SRC_EXT   = { 244, 64, 228, 60 };
 const Rect B_CYC_MINUS = { 8, 156, 100, 60 };
 const Rect B_CYC_PLUS  = { 372, 156, 100, 60 };
 const Rect R_CYC       = { 116, 156, 248, 60 };
-const Rect B_HYS_MINUS = { 8, 248, 100, 60 };
-const Rect B_HYS_PLUS  = { 372, 248, 100, 60 };
-const Rect R_HYS       = { 116, 248, 248, 60 };
+// Márgenes de la histéresis, uno en cada mitad
+const Rect B_HON_MINUS  = { 8, 248, 60, 60 };
+const Rect R_HON        = { 68, 248, 108, 60 };
+const Rect B_HON_PLUS   = { 176, 248, 60, 60 };
+const Rect B_HOFF_MINUS = { 244, 248, 60, 60 };
+const Rect R_HOFF       = { 304, 248, 108, 60 };
+const Rect B_HOFF_PLUS  = { 412, 248, 60, 60 };
 
 enum Screen { SCR_MAIN, SCR_MENU };
 Screen screen = SCR_MAIN;
@@ -330,11 +336,25 @@ void drawMenuCycle(const UiState &s, bool buttons) {
   drawMenuValue("Ciclo minimo caldera (encendida o apagada)", buf, B_CYC_MINUS, R_CYC, B_CYC_PLUS, buttons);
 }
 
-void drawMenuHyst(const UiState &s, bool buttons) {
-  char buf[16];
-  if (s.hysteresis % 10 == 0) snprintf(buf, sizeof(buf), "%.1f C", s.hysteresis / 100.0f);
-  else snprintf(buf, sizeof(buf), "%.2f C", s.hysteresis / 100.0f);
-  drawMenuValue("Histeresis (margen sobre la consigna)", buf, B_HYS_MINUS, R_HYS, B_HYS_PLUS, buttons);
+// Media fila: título, - valor + (para los dos márgenes de la histéresis)
+void drawMenuHalf(const char *title, uint16_t hundredths, const Rect &minus, const Rect &val, const Rect &plus, bool buttons) {
+  if (buttons) {
+    lcd.fillRect(minus.x, val.y - 28, plus.x + plus.w - minus.x, val.h + 30, C_BG);
+    lcd.setFont(&fonts::DejaVu18);
+    lcd.setTextDatum(textdatum_t::middle_center);
+    lcd.setTextColor(C_DIM);
+    lcd.drawString(title, val.x + val.w / 2, val.y - 14);
+    drawButton(minus, "-", nullptr, C_PANEL, C_TEXT);
+    drawButton(plus, "+", nullptr, C_PANEL, C_TEXT);
+  }
+  char buf[12];
+  if (hundredths % 10 == 0) snprintf(buf, sizeof(buf), "%.1f C", hundredths / 100.0f);
+  else snprintf(buf, sizeof(buf), "%.2f C", hundredths / 100.0f);
+  lcd.fillRect(val.x, val.y, val.w, val.h, C_BG);
+  lcd.setFont(&fonts::DejaVu24);
+  lcd.setTextDatum(textdatum_t::middle_center);
+  lcd.setTextColor(C_TEXT);
+  lcd.drawString(buf, val.x + val.w / 2, val.y + val.h / 2 + 2);
 }
 
 // ---------------- Calibración del táctil ----------------
@@ -475,8 +495,10 @@ void uiUpdate(const UiState &s) {
       drawMenuSource(s);
     if (all || s.minCycle != prev.minCycle)
       drawMenuCycle(s, all);
-    if (all || s.hysteresis != prev.hysteresis)
-      drawMenuHyst(s, all);
+    if (all || s.hystOn != prev.hystOn)
+      drawMenuHalf("Arranca por debajo", s.hystOn, B_HON_MINUS, R_HON, B_HON_PLUS, all);
+    if (all || s.hystOff != prev.hystOff)
+      drawMenuHalf("Corta por encima", s.hystOff, B_HOFF_MINUS, R_HOFF, B_HOFF_PLUS, all);
     prev = s;
     drawn = true;
     return;
@@ -546,8 +568,10 @@ UiAction uiPoll() {
     else if (B_SRC_EXT.hit(x, y))   a = UI_SRC_EXT;
     else if (B_CYC_MINUS.hit(x, y)) a = UI_CYC_DOWN;
     else if (B_CYC_PLUS.hit(x, y))  a = UI_CYC_UP;
-    else if (B_HYS_MINUS.hit(x, y)) a = UI_HYS_DOWN;
-    else if (B_HYS_PLUS.hit(x, y))  a = UI_HYS_UP;
+    else if (B_HON_MINUS.hit(x, y))  a = UI_HON_DOWN;
+    else if (B_HON_PLUS.hit(x, y))   a = UI_HON_UP;
+    else if (B_HOFF_MINUS.hit(x, y)) a = UI_HOFF_DOWN;
+    else if (B_HOFF_PLUS.hit(x, y))  a = UI_HOFF_UP;
   } else {
     if (B_MINUS.hit(x, y))     a = UI_SP_DOWN;
     else if (B_PLUS.hit(x, y)) a = UI_SP_UP;
@@ -556,7 +580,8 @@ UiAction uiPoll() {
     else if (B_MENU.hit(x, y)) screen = SCR_MENU;
   }
 
-  if (a == UI_SP_DOWN || a == UI_SP_UP || a == UI_CYC_DOWN || a == UI_CYC_UP || a == UI_HYS_DOWN || a == UI_HYS_UP) {
+  if (a == UI_SP_DOWN || a == UI_SP_UP || a == UI_CYC_DOWN || a == UI_CYC_UP ||
+      a == UI_HON_DOWN || a == UI_HON_UP || a == UI_HOFF_DOWN || a == UI_HOFF_UP) {
     repeatAction = a;
     nextRepeat = now + 500;
   }
