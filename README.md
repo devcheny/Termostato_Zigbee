@@ -99,12 +99,12 @@ ESP32-C6 Super Mini        Pantalla 3,5" SPI
   GPIO1  ──────────────── LED
   (sin conectar)          SDO(MISO)
   GPIO2  ──────────────── T_CS
-  GPIO23 ──────────────── T_DO
+  GPIO23 ──────────────── T_DO (en algunas placas T_OUT)
   GPIO3  ──────────────── T_IRQ
 ```
 
 - 21, 22 y 23 son los agujeros del centro de la placa; 0, 1, 2 y 3 están en la fila izquierda; 20 y 14 en la derecha.
-- **SDO(MISO) de la pantalla se deja sin conectar**: el ILI9488 no suelta esa línea y estropearía las lecturas del táctil. El táctil va por T_DO.
+- **SDO(MISO) de la pantalla se deja sin conectar**: el ILI9488 no suelta esa línea y estropearía las lecturas del táctil. El táctil va por T_DO (T_OUT en algunas placas).
 - **VCC a 5V** si la pantalla lleva su regulador (un chip de 3 patas cerca del conector y el jumper J1 abierto, lo normal en estas placas). Si no lo lleva, a 3V3. Las señales son de 3,3 V en los dos casos.
 - LED controla la retroiluminación a través de un transistor de la propia pantalla, así que el GPIO1 puede regular el brillo. Si no te interesa atenuarla, conecta LED a 3V3.
 - Los pines de la tarjeta SD no se usan.

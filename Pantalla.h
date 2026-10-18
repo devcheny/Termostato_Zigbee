@@ -22,7 +22,7 @@
 
 #define TFT_SCK    21
 #define TFT_MOSI   22   // SDI(MOSI) y T_DIN
-#define TFT_MISO   23   // solo T_DO: no conectes SDO(MISO) de la pantalla
+#define TFT_MISO   23   // solo T_DO (o T_OUT): no conectes SDO(MISO) de la pantalla
 #define TFT_CS     20
 #define TFT_DC     14   // DC/RS
 #define TFT_RST    0
