@@ -35,7 +35,9 @@ Al encender, primero entra el relé de la caldera; al apagar, primero sale el de
 La regulación la hace el ESP32, no HA:
 
 - Enciende cuando la temperatura baja **0,3 °C** por debajo de la consigna y apaga cuando sube 0,3 °C por encima (`HYSTERESIS`).
-- Entre encendido y apagado pasan al menos **3 minutos**, para no hacer ciclos cortos en la caldera. Se cambia desde HA con **Ciclo mínimo caldera** (0 a 30 minutos, con décimas; 0 para pruebas) y se guarda en el ESP32. HA lo muestra como casilla para escribir el valor, no como deslizador. Poner el modo en Apagado o apagar la caldera corta al momento. Mientras un cambio espera al ciclo mínimo, el botón **Radiadores** de la pantalla se pone marrón y muestra la cuenta atrás («Arranca 2:35» o «Apaga 2:35»).
+- El relé de la caldera pasa al menos **3 minutos** encendido o apagado antes de volver a cambiar, para no hacer ciclos cortos en la caldera. Se cambia desde HA con **Ciclo mínimo caldera** (0 a 30 minutos, con décimas; 0 para pruebas) y se guarda en el ESP32. HA lo muestra como casilla para escribir el valor, no como deslizador.
+- Los radiadores no tienen ciclo mínimo: se encienden y apagan al momento, pero solo con la caldera encendida. Si piden calor con la caldera esperando a su ciclo mínimo, arrancan en cuanto ella encienda (en pantalla: «Esperando a la caldera»).
+- Mientras la caldera espera al ciclo mínimo, su botón en la pantalla se pone marrón y muestra la cuenta atrás («Enciende 2:35» o «Apaga 2:35»). Si apagas la caldera durante el ciclo mínimo, los radiadores se apagan al momento y la caldera cuando acabe la cuenta.
 - Si el SHT31 deja de responder durante 1 minuto, deja de calentar por seguridad. El LED parpadea en rojo. La caldera (agua caliente) no se ve afectada.
 - La configuración (modo, consigna, caldera, límites, calibración) se guarda en flash. Tras un corte de luz sigue funcionando igual aunque HA o la red Zigbee no estén.
 
@@ -353,4 +355,4 @@ Para probar una versión sin publicarla:
 
 - Funciona como **end device** con la radio siempre escuchando, igual que `Luz_Plantas_ESP32`. No repite la señal Zigbee. Si necesitas que haga de router, cambia a `Zigbee mode: Zigbee ZCZR` y `Zigbee.begin(ZIGBEE_ROUTER)`.
 - Las constantes de ajuste están al principio del sketch: `HYSTERESIS`, `MIN_CYCLE_DEFAULT`, pines, intervalos de lectura y envío. Las de la pantalla (pines, brillo, paso de la consigna) están al principio de [Pantalla.h](Pantalla.h).
-- Si apagas los radiadores y los vuelves a encender enseguida, la calefacción puede tardar en arrancar lo que marque **Ciclo mínimo caldera** (3 minutos por defecto). Para pruebas, ponlo a 0.
+- Si apagas la caldera y la vuelves a encender enseguida, tarda en encender lo que marque **Ciclo mínimo caldera** (3 minutos por defecto); la cuenta atrás sale en su botón. Para pruebas, ponlo a 0.

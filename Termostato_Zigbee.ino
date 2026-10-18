@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x0000000D
+#define FW_VERSION      0x0000000E
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -440,9 +440,11 @@ bool ctrlOk = false;
 bool ctrlIsExternal = false;
 
 bool heatDemand = false;             // la calefacción pide calor (histéresis)
-unsigned long lastHeatSwitch = 0;
-bool heatSwitchedOnce = false;
-bool heatWaiting = false;            // hay un cambio de la calefacción esperando al ciclo mínimo
+bool boilerOn = false;               // relé de la caldera
+bool calefOn = false;                // relé de la calefacción (solo con la caldera encendida)
+unsigned long lastBoilerSwitch = 0;
+bool boilerSwitchedOnce = false;
+bool boilerWaiting = false;          // la caldera tiene un cambio esperando al ciclo mínimo
 
 Preferences prefs;
 unsigned long lastChange = 0;
@@ -498,37 +500,57 @@ void markDirty() {
 }
 
 // ---------------- Relés ----------------
+// El ciclo mínimo protege solo la caldera: entre encendido y apagado de su relé pasan
+// al menos cfg.minCycle décimas de minuto. La calefacción cambia al momento, pero solo
+// puede estar encendida con la caldera encendida.
 void applyRelays() {
-  bool calef = heatDemand;
-  bool caldera = cfg.acsOn || heatDemand;   // heatDemand sin acsOn solo ocurre en modo forzado
+  bool wantBoiler = cfg.acsOn || heatDemand;
+  boilerWaiting = false;
+  if (wantBoiler != boilerOn) {
+    if (boilerSwitchedOnce && millis() - lastBoilerSwitch < cfg.minCycle * 6000UL) {
+      boilerWaiting = true;
+    } else {
+      boilerOn = wantBoiler;
+      lastBoilerSwitch = millis();
+      boilerSwitchedOnce = true;
+      Serial.printf("Relé caldera %s\n", boilerOn ? "ON" : "OFF");
+    }
+  }
+  bool calef = heatDemand && boilerOn;
   // Al encender: primero la caldera. Al apagar: primero la calefacción.
-  if (caldera) digitalWrite(RELAY_CALDERA_PIN, RELAY_ON);
+  if (boilerOn) digitalWrite(RELAY_CALDERA_PIN, RELAY_ON);
   digitalWrite(RELAY_CALEF_PIN, calef ? RELAY_ON : RELAY_OFF);
-  if (!caldera) digitalWrite(RELAY_CALDERA_PIN, RELAY_OFF);
+  if (!boilerOn) digitalWrite(RELAY_CALDERA_PIN, RELAY_OFF);
+
+  if (calef != calefOn) {
+    calefOn = calef;
+    Serial.printf("Relé calefacción %s\n", calefOn ? "ON" : "OFF");
+    uint16_t running = calefOn ? 0x0001 : 0x0000;
+    zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID, &running);
+    if (Zigbee.connected()) zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID);
+  }
+}
+
+// Segundos que faltan para que la caldera pueda cambiar (0 si no espera nada)
+uint32_t boilerWaitSecs() {
+  if (!boilerWaiting) return 0;
+  unsigned long total = cfg.minCycle * 6000UL, elapsed = millis() - lastBoilerSwitch;
+  return elapsed >= total ? 0 : (total - elapsed + 999) / 1000;
 }
 
 // ---------------- Control ----------------
 void setHeatDemand(bool on) {
   if (on == heatDemand) return;
   heatDemand = on;
-  lastHeatSwitch = millis();
-  heatSwitchedOnce = true;
-  applyRelays();
-  Serial.printf("Calefacción %s (T=%.2f, consigna=%.2f)\n", on ? "ENCENDIDA" : "APAGADA", ctrlTemp, cfg.setpoint / 100.0f);
-
-  uint16_t running = on ? 0x0001 : 0x0000;
+  Serial.printf("Calefacción %s (T=%.2f, consigna=%.2f)\n", on ? "PIDE CALOR" : "NO PIDE CALOR", ctrlTemp, cfg.setpoint / 100.0f);
   uint8_t demand = on ? 100 : 0;
-  zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID, &running);
   zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_PI_HEATING_DEMAND_ID, &demand);
-  if (Zigbee.connected()) {
-    zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID);
-    zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_PI_HEATING_DEMAND_ID);
-  }
+  if (Zigbee.connected()) zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_PI_HEATING_DEMAND_ID);
+  applyRelays();
 }
 
 void regulate() {
-  heatWaiting = false;
-  // Apagado o sensor sin datos: corta al momento (sin esperar el ciclo mínimo)
+  // Apagado o sensor sin datos: deja de pedir calor al momento
   if (!cfg.heatMode || !ctrlOk) {
     setHeatDemand(false);
     return;
@@ -537,19 +559,7 @@ void regulate() {
   bool want = heatDemand;
   if (ctrlTemp <= sp - HYSTERESIS) want = true;
   else if (ctrlTemp >= sp + HYSTERESIS) want = false;
-
-  if (want != heatDemand && heatSwitchedOnce && millis() - lastHeatSwitch < cfg.minCycle * 6000UL) {
-    heatWaiting = true;
-    return;
-  }
   setHeatDemand(want);
-}
-
-// Segundos que faltan para que la calefacción pueda cambiar (0 si no espera nada)
-uint32_t heatWaitSecs() {
-  if (!heatWaiting) return 0;
-  unsigned long total = cfg.minCycle * 6000UL, elapsed = millis() - lastHeatSwitch;
-  return elapsed >= total ? 0 : (total - elapsed + 999) / 1000;
 }
 
 // ---------------- Sensor ----------------
@@ -612,7 +622,7 @@ void publishConfig() {
   zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_HEAT_SETPOINT_LIMIT_ID, &cfg.minLimit);
   zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_MAX_HEAT_SETPOINT_LIMIT_ID, &cfg.maxLimit);
   zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_CALIBRATION_ID, &cfg.calibration);
-  uint16_t running = heatDemand ? 0x0001 : 0x0000;
+  uint16_t running = calefOn ? 0x0001 : 0x0000;
   zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID, &running);
   // Los interruptores no se informan a mano: el SDK aborta al enviar un informe manual
   // de una salida binaria. La pila los informa sola al cambiar (ver enableReports()).
@@ -846,8 +856,10 @@ void handleUi() {
   s.extSelected = cfg.useExternal;
   s.extActive = ctrlIsExternal;
   s.heatMode = cfg.heatMode;
-  s.heating = heatDemand;
-  s.waitSecs = heatWaitSecs();
+  s.heating = calefOn;
+  s.heatWanted = heatDemand;
+  s.boilerOn = boilerOn;
+  s.waitSecs = boilerWaitSecs();
   s.setpoint = cfg.setpoint;
   s.acs = cfg.acsOn;
   s.connected = Zigbee.connected();
@@ -866,7 +878,7 @@ void updateLed(bool connected) {
   }
   if (!ctrlOk && cfg.heatMode) rgbLedWrite(STATUS_LED, blinkOn ? 40 : 0, 0, 0);
   else if (!connected)            rgbLedWrite(STATUS_LED, 0, 0, blinkOn ? 30 : 0);
-  else if (heatDemand)            rgbLedWrite(STATUS_LED, 30, 8, 0);
+  else if (calefOn)               rgbLedWrite(STATUS_LED, 30, 8, 0);
   else                            rgbLedWrite(STATUS_LED, 0, 0, 0);
 }
 
@@ -1052,8 +1064,8 @@ void loop() {
     readSensor();
     regulate();
   }
-  // Fin del ciclo mínimo: aplicar el cambio pendiente sin esperar a la próxima lectura
-  if (heatWaiting && heatWaitSecs() == 0) regulate();
+  // Fin del ciclo mínimo de la caldera: aplicar el cambio pendiente
+  if (boilerWaiting && boilerWaitSecs() == 0) applyRelays();
 
   static unsigned long lastReport = 0;
   if (now - lastReport > REPORT_INTERVAL_MS) {

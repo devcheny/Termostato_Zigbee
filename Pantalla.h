@@ -105,7 +105,9 @@ struct UiState {
   bool    extActive;   // se está usando el externo (si no llega, se usa el SHT31)
   bool    heatMode;    // calefacción en modo Calor
   bool    heating;     // relé de calefacción activo
-  uint32_t waitSecs;   // segundos hasta que la calefacción pueda cambiar (ciclo mínimo); 0 = nada pendiente
+  bool    heatWanted;  // la calefacción pide calor (puede estar esperando a la caldera)
+  bool    boilerOn;    // relé de la caldera activo
+  uint32_t waitSecs;   // segundos hasta que la caldera pueda cambiar (ciclo mínimo); 0 = nada pendiente
   int16_t setpoint;    // 0,01 ºC
   bool    acs;         // caldera (agua caliente) encendida
   bool    connected;   // red Zigbee
@@ -222,6 +224,7 @@ void drawTemp(const UiState &s) {
   if (!s.sensorOk)      { st = "Sensor sin datos"; c = C_RED; }
   else if (!s.heatMode) { st = "Calefaccion apagada"; c = C_DIM; }
   else if (s.heating)   { st = "Calentando"; c = C_ORANGE; }
+  else if (s.heatWanted) { st = "Esperando a la caldera"; c = C_ORANGE; }
   else                  { st = "En reposo"; c = C_DIM; }
   lcd.setFont(&fonts::DejaVu18);
   lcd.setTextDatum(textdatum_t::middle_center);
@@ -241,15 +244,15 @@ void drawSetpoint(const UiState &s) {
 }
 
 void drawButtons(const UiState &s, bool heat, bool acs) {
-  if (heat && s.waitSecs) {
+  if (heat) drawButton(B_HEAT, "Radiadores", s.heatMode ? "ENCENDIDA" : "APAGADA",
+                       s.heatMode ? C_ORANGE : C_PANEL, s.heatMode ? C_BG : C_TEXT);
+  if (acs && s.waitSecs) {
     // Cambio retenido por el ciclo mínimo de la caldera: cuenta atrás en el botón
     char buf[20];
-    snprintf(buf, sizeof(buf), "%s %lu:%02lu", s.heating ? "Apaga" : "Arranca",
+    snprintf(buf, sizeof(buf), "%s %lu:%02lu", s.boilerOn ? "Apaga" : "Enciende",
              (unsigned long)(s.waitSecs / 60), (unsigned long)(s.waitSecs % 60));
-    drawButton(B_HEAT, "Radiadores", buf, C_WAIT, C_TEXT);
-  } else if (heat) drawButton(B_HEAT, "Radiadores", s.heatMode ? "ENCENDIDA" : "APAGADA",
-                       s.heatMode ? C_ORANGE : C_PANEL, s.heatMode ? C_BG : C_TEXT);
-  if (acs)  drawButton(B_ACS, "Caldera", s.acs ? "ENCENDIDA" : "APAGADA",
+    drawButton(B_ACS, "Caldera", buf, C_WAIT, C_TEXT);
+  } else if (acs) drawButton(B_ACS, "Caldera", s.acs ? "ENCENDIDA" : "APAGADA",
                        s.acs ? C_BLUE : C_PANEL, s.acs ? C_BG : C_TEXT);
 }
 
@@ -328,6 +331,7 @@ void uiUpdate(const UiState &s) {
       s.humOk != prev.humOk || (int)lroundf(s.hum) != (int)lroundf(prev.hum))
     drawTop(s);
   if (all || s.sensorOk != prev.sensorOk || t10(s.temp) != t10(prev.temp) || s.heatMode != prev.heatMode || s.heating != prev.heating ||
+      s.heatWanted != prev.heatWanted ||
       s.extSelected != prev.extSelected || s.extActive != prev.extActive)
     drawTemp(s);
   if (all || s.setpoint != prev.setpoint || s.heatMode != prev.heatMode)
@@ -336,8 +340,8 @@ void uiUpdate(const UiState &s) {
     drawButton(B_MINUS, "-", nullptr, C_PANEL, C_TEXT);
     drawButton(B_PLUS, "+", nullptr, C_PANEL, C_TEXT);
   }
-  drawButtons(s, all || s.heatMode != prev.heatMode || s.heating != prev.heating || s.waitSecs != prev.waitSecs,
-              all || s.acs != prev.acs);
+  drawButtons(s, all || s.heatMode != prev.heatMode,
+              all || s.acs != prev.acs || s.boilerOn != prev.boilerOn || s.waitSecs != prev.waitSecs);
 
   prev = s;
   drawn = true;
