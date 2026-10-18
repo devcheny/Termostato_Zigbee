@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x0000000F
+#define FW_VERSION      0x00000010
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -67,6 +67,7 @@
 // APP_VALID_AFTER_MS conectada a Zigbee. Si se cuelga o reinicia antes, el bootloader
 // arranca la versión anterior; si no se conecta en APP_ROLLBACK_AFTER_MS, vuelve atrás.
 #define APP_VALID_AFTER_MS    (2UL * 60 * 1000)
+#define ZB_SETTLE_MS          5000UL   // espera tras conectar antes de enviar informes
 #define APP_ROLLBACK_AFTER_MS (15UL * 60 * 1000)
 
 // ---------------- Configuración ----------------
@@ -450,6 +451,10 @@ Preferences prefs;
 unsigned long lastChange = 0;
 bool pendingSave = false;
 bool wasConnected = false;
+unsigned long zbConnectedSince = 0;
+// Conectado y con la red asentada. Enviar informes nada más conectar a veces hace que
+// la pila Zigbee aborte (aps_main.c:927, visto en la placa al arrancar).
+bool zbReady = false;
 volatile bool otaRunning = false;
 
 // Cambios recibidos desde Zigbee (se escriben en la tarea Zigbee, se leen en loop)
@@ -527,7 +532,7 @@ void applyRelays() {
     Serial.printf("Relé calefacción %s\n", calefOn ? "ON" : "OFF");
     uint16_t running = calefOn ? 0x0001 : 0x0000;
     zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID, &running);
-    if (Zigbee.connected()) zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID);
+    if (zbReady) zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID);
   }
 }
 
@@ -545,7 +550,7 @@ void setHeatDemand(bool on) {
   Serial.printf("Calefacción %s (T=%.2f, consigna=%.2f)\n", on ? "PIDE CALOR" : "NO PIDE CALOR", ctrlTemp, cfg.setpoint / 100.0f);
   uint8_t demand = on ? 100 : 0;
   zbThermostat.set(ESP_ZB_ZCL_ATTR_THERMOSTAT_PI_HEATING_DEMAND_ID, &demand);
-  if (Zigbee.connected()) zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_PI_HEATING_DEMAND_ID);
+  if (zbReady) zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_PI_HEATING_DEMAND_ID);
   applyRelays();
 }
 
@@ -608,7 +613,7 @@ void updateControlTemp() {
 }
 
 void reportAll() {
-  if (!Zigbee.connected()) return;
+  if (!zbReady) return;
   if (ctrlOk) zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID);
   if (sensorOk) zbSensor.report();
   zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_THERMOSTAT_RUNNING_STATE_ID);
@@ -706,7 +711,7 @@ void setCaldera(bool on) {
 // Publica la configuración y avisa a ZHA del modo y la consigna
 void publishAndReport() {
   publishConfig();
-  if (Zigbee.connected()) {
+  if (zbReady) {
     if (!zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID) ||
         !zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID))
       Serial.println("Aviso: no se pudo informar a ZHA del modo o la consigna");
@@ -1035,8 +1040,14 @@ void loop() {
   bool connected = Zigbee.connected();
 
   if (connected && !wasConnected) {
-    // Recién conectado: informar a ZHA del estado real y buscar actualizaciones
+    zbConnectedSince = now;
     Serial.printf("Conectado a la red Zigbee (firmware 0x%08X)\n", FW_VERSION);
+  }
+  wasConnected = connected;
+  bool ready = connected && now - zbConnectedSince > ZB_SETTLE_MS;
+  if (ready && !zbReady) {
+    zbReady = true;
+    // Red asentada: informar a ZHA del estado real y buscar actualizaciones
     publishConfig();
     reportAll();
     zbThermostat.report(ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID);
@@ -1045,7 +1056,7 @@ void loop() {
     zbMinCycle.reportCapabilities();
     zbThermostat.requestOTAUpdate();   // primera consulta en ~1 min, luego cada hora
   }
-  wasConnected = connected;
+  zbReady = ready;
 
   processZigbeeChanges();
   checkAppValid(connected);
