@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000010
+#define FW_VERSION      0x00000011
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -962,6 +962,10 @@ void setup() {
   pinMode(RELAY_CALEF_PIN, OUTPUT);
 
   Serial.begin(115200);
+  // Con el USB conectado a un PC sin el monitor abierto, cada mensaje esperaba hasta
+  // 2 s a que alguien lo leyera y el termostato iba a tirones. Sin espera: si nadie
+  // lee, el mensaje se descarta.
+  Serial.setTxTimeoutMs(0);
   rgbLedWrite(STATUS_LED, 0, 0, 0);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   Serial.printf("Termostato Zigbee, firmware 0x%08X (reinicio: %s)\n", FW_VERSION, resetReasonText());
