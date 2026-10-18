@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000011
+#define FW_VERSION      0x00000012
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -96,6 +96,7 @@
 #define HYSTERESIS        0.3f      // ºC por debajo / encima de la consigna
 #define MIN_CYCLE_DEFAULT 3         // minutos mínimos encendida/apagada (protege la caldera); se cambia desde HA
 #define MIN_CYCLE_MAX     30
+#define MIN_CYCLE_UI_STEP 5         // paso en la pantalla: 0,5 min (en décimas)
 #define MIN_CYCLE_STEP    0.1f      // paso en HA: con más de 256 pasos HA muestra una casilla y no un deslizador
 #define READ_INTERVAL_MS  10000     // lectura del SHT31
 #define REPORT_INTERVAL_MS 60000    // envío periódico a ZHA aunque no cambie nada
@@ -806,7 +807,7 @@ void processZigbeeChanges() {
     if (v != cfg.minCycle) {
       cfg.minCycle = v;
       Serial.printf("Ciclo mínimo de la caldera: %.1f min\n", cfg.minCycle / 10.0f);
-      regulate();   // con 0, aplica ya el cambio pendiente
+      applyRelays();   // si se acorta, puede liberar una espera de la caldera
       markDirty();
     }
   }
@@ -822,7 +823,8 @@ void localConfigChanged() {
 }
 
 void handleUi() {
-  switch (uiPoll()) {
+  UiAction a = uiPoll();
+  switch (a) {
     case UI_SP_DOWN:
       cfg.setpoint = clampSetpoint(cfg.setpoint - SP_STEP);
       localConfigChanged();
@@ -841,12 +843,30 @@ void handleUi() {
       Serial.printf("Pantalla -> caldera %s\n", cfg.acsOn ? "ON" : "OFF");
       localConfigChanged();
       break;
-    case UI_TOGGLE_SOURCE:
-      cfg.useExternal = !cfg.useExternal;
-      Serial.printf("Pantalla -> sensor %s\n", cfg.useExternal ? "EXTERNO" : "SHT31");
-      updateControlTemp();
-      localConfigChanged();
+    case UI_SRC_INT:
+    case UI_SRC_EXT:
+      if (cfg.useExternal != (a == UI_SRC_EXT)) {
+        cfg.useExternal = (a == UI_SRC_EXT);
+        Serial.printf("Pantalla -> sensor %s\n", cfg.useExternal ? "EXTERNO" : "SHT31");
+        updateControlTemp();
+        localConfigChanged();
+      }
       break;
+    case UI_CYC_DOWN:
+    case UI_CYC_UP: {
+      // Pasos de 0,5 min, ajustando a múltiplo de 0,5 si desde HA se puso otro valor
+      int v = a == UI_CYC_UP ? (cfg.minCycle / MIN_CYCLE_UI_STEP + 1) * MIN_CYCLE_UI_STEP
+                             : ((cfg.minCycle + MIN_CYCLE_UI_STEP - 1) / MIN_CYCLE_UI_STEP - 1) * MIN_CYCLE_UI_STEP;
+      v = constrain(v, 0, MIN_CYCLE_MAX * 10);
+      if (v != cfg.minCycle) {
+        cfg.minCycle = v;
+        Serial.printf("Pantalla -> ciclo mínimo de la caldera %.1f min\n", cfg.minCycle / 10.0f);
+        zbMinCycle.set(cfg.minCycle / 10.0f);   // la pila lo informa a HA
+        applyRelays();                          // si se acorta, puede liberar una espera
+        markDirty();
+      }
+      break;
+    }
     default: break;
   }
 
@@ -869,6 +889,10 @@ void handleUi() {
   s.acs = cfg.acsOn;
   s.connected = Zigbee.connected();
   s.ota = otaRunning;
+  s.tempInt = tempC;
+  s.tempExt = extTemp;
+  s.extOk = extValid();
+  s.minCycle = cfg.minCycle;
   uiUpdate(s);
 }
 

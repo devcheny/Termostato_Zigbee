@@ -32,7 +32,7 @@
 
 #define BL_ON         255      // brillo normal (0-255)
 #define BL_DIM        15       // brillo en reposo (0 = apagada)
-#define DIM_AFTER_MS  30000    // sin tocar este tiempo -> brillo de reposo
+#define DIM_AFTER_MS  30000    // sin tocar este tiempo -> brillo de reposo (y vuelta a la pantalla principal)
 #define SP_STEP       50       // paso de la consigna: 0,5 ºC
 // ---------------------------------------------------------------
 
@@ -112,9 +112,13 @@ struct UiState {
   bool    acs;         // caldera (agua caliente) encendida
   bool    connected;   // red Zigbee
   bool    ota;         // descargando firmware
+  float   tempInt;     // ºC del SHT31 (ya calibrada; vale si humOk)
+  float   tempExt;     // ºC externa recibida de HA (vale si extOk)
+  bool    extOk;       // la temperatura externa es reciente
+  uint16_t minCycle;   // ciclo mínimo de la caldera, décimas de minuto
 };
 
-enum UiAction { UI_NONE, UI_SP_DOWN, UI_SP_UP, UI_TOGGLE_HEAT, UI_TOGGLE_ACS, UI_TOGGLE_SOURCE };
+enum UiAction { UI_NONE, UI_SP_DOWN, UI_SP_UP, UI_TOGGLE_HEAT, UI_TOGGLE_ACS, UI_SRC_INT, UI_SRC_EXT, UI_CYC_DOWN, UI_CYC_UP };
 
 namespace ui {
 
@@ -142,6 +146,18 @@ const Rect B_MINUS = { 256, 144, 100, 76 };
 const Rect B_PLUS  = { 368, 144, 100, 76 };
 const Rect B_HEAT  = { 8, 238, 228, 76 };
 const Rect B_ACS   = { 244, 238, 228, 76 };
+const Rect B_MENU  = { 170, 2, 140, 32 };    // "Ajustes", en la barra superior
+// Pantalla de ajustes
+const Rect B_BACK      = { 4, 2, 140, 32 };
+const Rect B_SRC_INT   = { 8, 72, 228, 76 };
+const Rect B_SRC_EXT   = { 244, 72, 228, 76 };
+const Rect B_CYC_MINUS = { 8, 206, 100, 76 };
+const Rect B_CYC_PLUS  = { 372, 206, 100, 76 };
+const Rect R_CYC       = { 116, 206, 248, 76 };
+
+enum Screen { SCR_MAIN, SCR_MENU };
+Screen screen = SCR_MAIN;
+Screen drawnScreen = SCR_MAIN;
 
 UiState prev;
 bool drawn = false;
@@ -193,6 +209,10 @@ void drawTop(const UiState &s) {
   lcd.setTextColor(C_TEXT);
   lcd.drawString(s.ota ? "Actualizando..." : (s.connected ? "Zigbee" : "Sin red"), 30, 19);
 
+  lcd.fillRoundRect(B_MENU.x, B_MENU.y, B_MENU.w, B_MENU.h, 8, C_BG);
+  lcd.setTextDatum(textdatum_t::middle_center);
+  lcd.drawString("Ajustes", B_MENU.x + B_MENU.w / 2, B_MENU.y + B_MENU.h / 2 + 1);
+
   char buf[16];
   if (s.humOk) snprintf(buf, sizeof(buf), "Hum %.0f%%", s.hum);
   else strcpy(buf, "Hum --");
@@ -205,7 +225,7 @@ void drawTemp(const UiState &s) {
   lcd.fillRect(R_TEMP.x, R_TEMP.y, R_TEMP.w, R_TEMP.h, C_BG);
   lcd.setFont(&fonts::DejaVu18);
   lcd.setTextDatum(textdatum_t::middle_center);
-  // Sensor con el que se regula (tocar esta zona lo cambia)
+  // Sensor con el que se regula (se elige en Ajustes)
   const char *src;
   uint32_t srcColor = C_DIM;
   if (!s.extSelected)      src = "Sensor interno";
@@ -254,6 +274,52 @@ void drawButtons(const UiState &s, bool heat, bool acs) {
     drawButton(B_ACS, "Caldera", buf, C_WAIT, C_TEXT);
   } else if (acs) drawButton(B_ACS, "Caldera", s.acs ? "ENCENDIDA" : "APAGADA",
                        s.acs ? C_BLUE : C_PANEL, s.acs ? C_BG : C_TEXT);
+}
+
+// ---------------- Pantalla de ajustes ----------------
+void drawMenuTop() {
+  lcd.fillRect(R_TOP.x, R_TOP.y, R_TOP.w, R_TOP.h, C_PANEL);
+  lcd.fillRoundRect(B_BACK.x, B_BACK.y, B_BACK.w, B_BACK.h, 8, C_BG);
+  lcd.setFont(&fonts::DejaVu18);
+  lcd.setTextColor(C_TEXT);
+  lcd.setTextDatum(textdatum_t::middle_center);
+  lcd.drawString("< Volver", B_BACK.x + B_BACK.w / 2, B_BACK.y + B_BACK.h / 2 + 1);
+  lcd.drawString("Ajustes", 240, 19);
+}
+
+void drawMenuSource(const UiState &s) {
+  lcd.fillRect(0, 40, 480, 116, C_BG);
+  lcd.setFont(&fonts::DejaVu18);
+  lcd.setTextDatum(textdatum_t::middle_center);
+  lcd.setTextColor(C_DIM);
+  lcd.drawString("Termometro para regular", 240, 56);
+  char a[16], b[16];
+  if (s.humOk) snprintf(a, sizeof(a), "%.1f C", s.tempInt);
+  else strcpy(a, "sin datos");
+  if (s.extOk) snprintf(b, sizeof(b), "%.1f C", s.tempExt);
+  else strcpy(b, "sin datos");
+  drawButton(B_SRC_INT, "Interno", a, s.extSelected ? C_PANEL : C_BLUE, s.extSelected ? C_TEXT : C_BG);
+  drawButton(B_SRC_EXT, "Externo", b, s.extSelected ? C_BLUE : C_PANEL, s.extSelected ? C_BG : C_TEXT);
+}
+
+void drawMenuCycle(const UiState &s, bool buttons) {
+  if (buttons) {
+    lcd.fillRect(0, 160, 480, 160, C_BG);
+    lcd.setFont(&fonts::DejaVu18);
+    lcd.setTextDatum(textdatum_t::middle_center);
+    lcd.setTextColor(C_DIM);
+    lcd.drawString("Ciclo minimo caldera", 240, 186);
+    drawButton(B_CYC_MINUS, "-", nullptr, C_PANEL, C_TEXT);
+    drawButton(B_CYC_PLUS, "+", nullptr, C_PANEL, C_TEXT);
+    lcd.drawString("Tiempo minimo encendida o apagada", 240, 300);
+  }
+  lcd.fillRect(R_CYC.x, R_CYC.y, R_CYC.w, R_CYC.h, C_BG);
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%.1f min", s.minCycle / 10.0f);
+  lcd.setFont(&fonts::DejaVu40);
+  lcd.setTextDatum(textdatum_t::middle_center);
+  lcd.setTextColor(C_TEXT);
+  lcd.drawString(buf, R_CYC.x + R_CYC.w / 2, R_CYC.y + R_CYC.h / 2 + 2);
 }
 
 // ---------------- Calibración del táctil ----------------
@@ -381,9 +447,23 @@ void uiBegin(Preferences &prefs) {
 // Repinta solo las zonas que han cambiado
 void uiUpdate(const UiState &s) {
   using namespace ui;
-  bool all = !drawn;
+  bool all = !drawn || screen != drawnScreen;
+  if (drawn && screen != drawnScreen) lcd.fillScreen(C_BG);
+  drawnScreen = screen;
   // Redondeo a lo que se ve en pantalla para no repintar por centésimas
-  auto t10 = [](float v) { return (int)lroundf(v * 10); };
+  auto t10 = [](float v) { return isnan(v) ? INT32_MIN : (int)lroundf(v * 10); };
+
+  if (screen == SCR_MENU) {
+    if (all) drawMenuTop();
+    if (all || s.extSelected != prev.extSelected || s.extOk != prev.extOk || s.humOk != prev.humOk ||
+        t10(s.tempInt) != t10(prev.tempInt) || t10(s.tempExt) != t10(prev.tempExt))
+      drawMenuSource(s);
+    if (all || s.minCycle != prev.minCycle)
+      drawMenuCycle(s, all);
+    prev = s;
+    drawn = true;
+    return;
+  }
 
   if (all || s.connected != prev.connected || s.ota != prev.ota ||
       s.humOk != prev.humOk || (int)lroundf(s.hum) != (int)lroundf(prev.hum))
@@ -419,6 +499,7 @@ UiAction uiPoll() {
     if (!dimmed && now - lastTouch > DIM_AFTER_MS) {
       dimmed = true;
       backlight(BL_DIM);
+      screen = SCR_MAIN;   // al apagarse, vuelve de los ajustes a la principal
     }
     return UI_NONE;
   }
@@ -432,7 +513,7 @@ UiAction uiPoll() {
   }
 
   if (pressed) {
-    // Dedo mantenido en + / -: repetir
+    // Dedo mantenido en un + / -: repetir
     if (repeatAction != UI_NONE && now >= nextRepeat) {
       nextRepeat = now + 150;
       return repeatAction;
@@ -442,13 +523,21 @@ UiAction uiPoll() {
 
   pressed = true;
   UiAction a = UI_NONE;
-  if (B_MINUS.hit(x, y))     a = UI_SP_DOWN;
-  else if (B_PLUS.hit(x, y)) a = UI_SP_UP;
-  else if (B_HEAT.hit(x, y)) a = UI_TOGGLE_HEAT;
-  else if (B_ACS.hit(x, y))  a = UI_TOGGLE_ACS;
-  else if (R_TEMP.hit(x, y)) a = UI_TOGGLE_SOURCE;
+  if (screen == SCR_MENU) {
+    if (B_BACK.hit(x, y))           screen = SCR_MAIN;
+    else if (B_SRC_INT.hit(x, y))   a = UI_SRC_INT;
+    else if (B_SRC_EXT.hit(x, y))   a = UI_SRC_EXT;
+    else if (B_CYC_MINUS.hit(x, y)) a = UI_CYC_DOWN;
+    else if (B_CYC_PLUS.hit(x, y))  a = UI_CYC_UP;
+  } else {
+    if (B_MINUS.hit(x, y))     a = UI_SP_DOWN;
+    else if (B_PLUS.hit(x, y)) a = UI_SP_UP;
+    else if (B_HEAT.hit(x, y)) a = UI_TOGGLE_HEAT;
+    else if (B_ACS.hit(x, y))  a = UI_TOGGLE_ACS;
+    else if (B_MENU.hit(x, y)) screen = SCR_MENU;
+  }
 
-  if (a == UI_SP_DOWN || a == UI_SP_UP) {
+  if (a == UI_SP_DOWN || a == UI_SP_UP || a == UI_CYC_DOWN || a == UI_CYC_UP) {
     repeatAction = a;
     nextRepeat = now + 500;
   }

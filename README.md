@@ -35,7 +35,7 @@ Al encender, primero entra el relé de la caldera; al apagar, primero sale el de
 La regulación la hace el ESP32, no HA:
 
 - Enciende cuando la temperatura baja **0,3 °C** por debajo de la consigna y apaga cuando sube 0,3 °C por encima (`HYSTERESIS`).
-- El relé de la caldera pasa al menos **3 minutos** encendido o apagado antes de volver a cambiar, para no hacer ciclos cortos en la caldera. Se cambia desde HA con **Ciclo mínimo caldera** (0 a 30 minutos, con décimas; 0 para pruebas) y se guarda en el ESP32. HA lo muestra como casilla para escribir el valor, no como deslizador.
+- El relé de la caldera pasa al menos **3 minutos** encendido o apagado antes de volver a cambiar, para no hacer ciclos cortos en la caldera. Se cambia desde HA con **Ciclo mínimo caldera** (0 a 30 minutos, con décimas; 0 para pruebas) o desde **Ajustes** en la pantalla y se guarda en el ESP32. HA lo muestra como casilla para escribir el valor, no como deslizador.
 - Los radiadores no tienen ciclo mínimo: se encienden y apagan al momento, pero solo con la caldera encendida. Si piden calor con la caldera esperando a su ciclo mínimo, arrancan en cuanto ella encienda (en pantalla: «Esperando a la caldera»).
 - Mientras la caldera espera al ciclo mínimo, su botón en la pantalla se pone marrón y muestra la cuenta atrás («Enciende 2:35» o «Apaga 2:35»). Si apagas la caldera durante el ciclo mínimo, los radiadores se apagan al momento y la caldera cuando acabe la cuenta.
 - Si el SHT31 deja de responder durante 1 minuto, deja de calentar por seguridad. El LED parpadea en rojo. La caldera (agua caliente) no se ve afectada.
@@ -47,7 +47,7 @@ Pantalla de 3,5" 320×480 SPI con táctil resistivo (la que viene con lápiz).
 
 ```
 +------------------------------------------------+
-| ● Zigbee                              Hum 48%  |
+| ● Zigbee          [ Ajustes ]         Hum 48%  |
 | Sensor interno  |        Consigna              |
 |                 |         20.5°                |
 |     21.4°       |   [   -   ]   [   +   ]      |
@@ -59,7 +59,12 @@ Pantalla de 3,5" 320×480 SPI con táctil resistivo (la que viene con lápiz).
 - **− / +**: cambian la consigna de 0,5 en 0,5 °C. Si mantienes pulsado, repite.
 - **Radiadores**: cambia la calefacción entre Calor y Apagado (lo mismo que el modo en HA). Al encenderla se enciende también la caldera.
 - **Caldera**: enciende o apaga la caldera (agua caliente). Al apagarla se apaga también la calefacción.
-- **Zona de la temperatura**: al tocarla cambia entre el sensor interno (SHT31) y el externo. Encima de la temperatura pone cuál se usa: "Sensor interno", "Sensor externo" o "Externo sin datos" (en naranja: está elegido el externo, pero no llega y se regula con el SHT31).
+- Encima de la temperatura pone con qué sensor se regula: "Sensor interno", "Sensor externo" o "Externo sin datos" (en naranja: está elegido el externo, pero no llega y se regula con el SHT31).
+- **Ajustes** (barra superior): abre una pantalla con:
+  - **Termómetro para regular**: botones **Interno** (SHT31) y **Externo**, cada uno con su temperatura actual. El elegido sale en azul.
+  - **Ciclo mínimo caldera**: − / + de 0,5 en 0,5 minutos (0 a 30). Si mantienes pulsado, repite.
+  - **< Volver** regresa a la pantalla principal; también vuelve sola cuando la pantalla baja el brillo.
+  - Lo que cambies aquí se ve en HA, igual que si lo cambias desde HA.
 - Lo que cambies en la pantalla se ve en HA al momento, y al revés.
 - Tras 30 s sin tocarla baja el brillo (`DIM_AFTER_MS`, `BL_DIM`). El primer toque solo la enciende, no pulsa ningún botón.
 - Arriba: estado de la red Zigbee (verde = conectado, rojo = sin red, azul = actualizando firmware) y la humedad.
@@ -241,7 +246,7 @@ El termostato puede regular con la temperatura de otro sensor de la casa en vez 
    mode: queued
    ```
 
-3. Pon **Sensor de temperatura** en **Externo** (o activa **Usar sensor externo** si no usas el quirk), o toca la temperatura en la pantalla.
+3. Pon **Sensor de temperatura** en **Externo** (o activa **Usar sensor externo** si no usas el quirk), o elige **Externo** en **Ajustes** en la pantalla.
 
 **Para hacer pruebas** sin SHT31 ni sensor externo: activa **Usar sensor externo** y escribe a mano la temperatura que quieras simular en **Temperatura externa**. El termostato regula con ese valor (durante 1 hora como máximo, ver abajo).
 
