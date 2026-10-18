@@ -266,15 +266,73 @@ bool loadCalibration(Preferences &prefs) {
   return ok;
 }
 
+// Cruz de calibración
+void drawCross(int32_t x, int32_t y, uint32_t color) {
+  lcd.drawFastHLine(x - 15, y, 31, color);
+  lcd.drawFastVLine(x, y - 15, 31, color);
+  lcd.drawCircle(x, y, 6, color);
+}
+
+// Lectura cruda estable del táctil en un punto: espera a que se pulse, promedia y
+// espera a que se suelte. Admite más variación que la calibración de LovyanGFX,
+// que en las esquinas de algunos táctiles no llega a aceptar nunca el toque.
+void readCalPoint(int32_t &rx, int32_t &ry) {
+  const int SAMPLES = 6, MAX_ERR = 60;
+  int32_t sx = 0, sy = 0, n = 0, x1, y1, x2, y2;
+  while (n < SAMPLES) {
+    while (!lcd.getTouchRaw(&x1, &y1)) delay(2);
+    delay(10);
+    if (!lcd.getTouchRaw(&x2, &y2) || abs(x1 - x2) > MAX_ERR || abs(y1 - y2) > MAX_ERR) continue;
+    sx += x1 + x2;
+    sy += y1 + y2;
+    n++;
+  }
+  rx = sx / (2 * SAMPLES);
+  ry = sy / (2 * SAMPLES);
+  while (lcd.getTouchRaw(&x1, &y1)) delay(5);
+  delay(300);
+}
+
+// Calibra con 4 puntos separados CAL_INSET px de los bordes (las esquinas del táctil
+// resistivo responden mal) y extrapola a las esquinas, que es lo que espera
+// setTouchCalibrate. Se hace en la orientación propia del táctil (rotación 0, 320x480):
+// orden de los puntos (0,0), (0,h-1), (w-1,0), (w-1,h-1).
 void calibrate(Preferences &prefs) {
+  const int32_t CAL_INSET = 40;
+  uint8_t rot = lcd.getRotation();
+  lcd.setRotation(0);
+  int32_t w = lcd.width(), h = lcd.height();
   lcd.fillScreen(C_BG);
   lcd.setFont(&fonts::DejaVu18);
   lcd.setTextDatum(textdatum_t::middle_center);
   lcd.setTextColor(C_TEXT);
-  lcd.drawString("Toca el centro de cada flecha", 240, 150);
+  lcd.drawString("Toca el centro", w / 2, h / 2 - 12);
+  lcd.drawString("de cada cruz", w / 2, h / 2 + 12);
+
+  int32_t px[4], py[4], rx[4], ry[4];
+  for (int i = 0; i < 4; ++i) {
+    px[i] = (i & 2) ? w - 1 - CAL_INSET : CAL_INSET;
+    py[i] = (i & 1) ? h - 1 - CAL_INSET : CAL_INSET;
+    drawCross(px[i], py[i], C_ORANGE);
+    readCalPoint(rx[i], ry[i]);
+    drawCross(px[i], py[i], C_BG);
+    Serial.printf("Calibración punto %d (%ld,%ld): crudo %ld,%ld\n", i, (long)px[i], (long)py[i], (long)rx[i], (long)ry[i]);
+  }
+
+  // Extrapolación a las esquinas: cada esquina se aleja de su punto lo mismo, en
+  // proporción, que la distancia entre puntos opuestos
+  float kx = (float)CAL_INSET / (w - 1 - 2 * CAL_INSET);
+  float ky = (float)CAL_INSET / (h - 1 - 2 * CAL_INSET);
   uint16_t cal[8];
-  lcd.calibrateTouch(cal, C_ORANGE, C_BG, 20);
+  for (int i = 0; i < 4; ++i) {
+    int ox = i ^ 2, oy = i ^ 1;   // punto opuesto en x y en y
+    float cx = rx[i] + (rx[i] - rx[ox]) * kx + (rx[i] - rx[oy]) * ky;
+    float cy = ry[i] + (ry[i] - ry[ox]) * kx + (ry[i] - ry[oy]) * ky;
+    cal[i * 2]     = (uint16_t)constrain(lroundf(cx), 0, 4095);
+    cal[i * 2 + 1] = (uint16_t)constrain(lroundf(cy), 0, 4095);
+  }
   lcd.setTouchCalibrate(cal);
+  lcd.setRotation(rot);
   prefs.begin("tft", false);
   prefs.putBytes("cal", cal, sizeof(cal));
   prefs.end();

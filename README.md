@@ -66,7 +66,7 @@ Pantalla de 3,5" 320×480 SPI con táctil resistivo (la que viene con lápiz).
 
 **Chip de la pantalla:** se vende como "ILI9341", pero un ILI9341 no llega a 320×480. Estas pantallas llevan **ILI9488** (lo más habitual) o **ST7796S**. El sketch viene para ILI9488. Si la pantalla se queda en blanco o la imagen sale mal, comenta `#define PANEL_ILI9488` en [Pantalla.h](Pantalla.h) para usar ST7796S. Si los colores salen invertidos o con rojo y azul cambiados, cambia `PANEL_INVERT` o `PANEL_BGR`.
 
-**Calibrar el táctil:** la primera vez, al arrancar sale "Toca la pantalla para calibrar el tactil" durante 8 s. Toca, y después toca el centro de cada flecha que aparece en las esquinas. Se guarda en el ESP32. Para recalibrar, toca la pantalla durante los 2 s del arranque.
+**Calibrar el táctil:** la primera vez, al arrancar sale "Toca la pantalla para calibrar el tactil" durante 8 s. Toca, y después toca con el lápiz el centro de cada cruz que aparece cerca de las esquinas (están algo separadas del borde porque las esquinas del táctil responden mal). Se guarda en el ESP32. Para recalibrar, toca la pantalla durante los 2 s del arranque.
 
 ## Conexionado
 
