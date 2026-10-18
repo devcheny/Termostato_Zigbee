@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000015
+#define FW_VERSION      0x00000016
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -1070,7 +1070,13 @@ void setup() {
 
   // Restaurar la configuración (tras un corte de luz sigue funcionando sin HA)
   loadConfig();
+  // La caldera ha estado apagada mientras el ESP32 arrancaba (corte de luz, OTA o
+  // cuelgue): cuenta como recién apagada, así que espera el ciclo mínimo antes de
+  // encenderse. Con varios cortes seguidos no arranca y para una y otra vez.
+  boilerSwitchedOnce = true;
+  lastBoilerSwitch = millis();
   applyRelays();   // agua caliente como estaba; la calefacción espera a tener temperatura
+  if (boilerWaiting) Serial.printf("Caldera: enciende en %lu s (ciclo mínimo tras el arranque)\n", (unsigned long)boilerWaitSecs());
 
   // Pantalla (si no hay calibración del táctil, la ofrece durante unos segundos)
   uiBegin(prefs);

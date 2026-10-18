@@ -41,7 +41,7 @@ La regulación la hace el ESP32, no HA:
 - Los radiadores no tienen ciclo mínimo: se encienden y apagan al momento, pero solo con la caldera encendida. Si piden calor con la caldera esperando a su ciclo mínimo, arrancan en cuanto ella encienda (en pantalla: «Esperando a la caldera»).
 - Mientras la caldera espera al ciclo mínimo, su botón en la pantalla se pone marrón y muestra la cuenta atrás («Enciende 2:35» o «Apaga 2:35»). Si apagas la caldera durante el ciclo mínimo, los radiadores se apagan al momento y la caldera cuando acabe la cuenta.
 - Si el SHT31 deja de responder durante 1 minuto, deja de calentar por seguridad. El LED parpadea en rojo. La caldera (agua caliente) no se ve afectada.
-- La configuración (modo, consigna, caldera, límites, calibración) se guarda en flash. Tras un corte de luz sigue funcionando igual aunque HA o la red Zigbee no estén.
+- La configuración (modo, consigna, caldera, límites, calibración) se guarda en flash. Tras un corte de luz sigue funcionando igual aunque HA o la red Zigbee no estén. Al volver la luz (o tras cualquier reinicio), si la caldera estaba encendida espera el **Ciclo mínimo caldera** antes de encenderse, con la cuenta atrás en su botón: así, varios cortes seguidos no la hacen arrancar y parar una y otra vez.
 
 ## Pantalla táctil
 
