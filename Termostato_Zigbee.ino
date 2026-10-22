@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000018
+#define FW_VERSION      0x00000019
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -226,7 +226,11 @@ public:
     const uint16_t TH = ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT;
     const uint8_t R = ESP_ZB_ZCL_ATTR_ACCESS_READ_ONLY, RW = ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, REP = ESP_ZB_ZCL_ATTR_ACCESS_REPORTING;
     int16_t local = (int16_t)0x8000;   // "desconocida" hasta la primera lectura
-    int16_t heatSp = SETPOINT_DEFAULT, coolSp = 2600;
+    // La pila rechaza (INVALID_VALUE) una consigna de calor que no quede por debajo de
+    // la de frío menos la banda muerta: con 26 ºC y 2,5 ºC HA no podía pasar de 23,5 ºC.
+    // Solo calienta, así que la de frío va fuera de alcance y la banda al mínimo (1 ºC).
+    int16_t heatSp = SETPOINT_DEFAULT, coolSp = SETPOINT_ABS_MAX + 300;
+    int8_t deadBand = 10;
     int16_t absMin = SETPOINT_ABS_MIN, absMax = SETPOINT_ABS_MAX;
     uint8_t seq = ESP_ZB_ZCL_THERMOSTAT_CONTROL_SEQ_OF_OPERATION_HEATING_ONLY;
     uint8_t mode = ESP_ZB_ZCL_THERMOSTAT_SYSTEM_MODE_OFF;
@@ -238,6 +242,7 @@ public:
     addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID, ESP_ZB_ZCL_ATTR_TYPE_S16, R | REP, &local);
     addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID, ESP_ZB_ZCL_ATTR_TYPE_S16, RW | REP, &heatSp);
     addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_COOLING_SETPOINT_ID, ESP_ZB_ZCL_ATTR_TYPE_S16, RW, &coolSp);
+    addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_MIN_SETPOINT_DEAD_BAND_ID, ESP_ZB_ZCL_ATTR_TYPE_S8, R, &deadBand);
     addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_CONTROL_SEQUENCE_OF_OPERATION_ID, ESP_ZB_ZCL_ATTR_TYPE_8BIT_ENUM, RW, &seq);
     addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_SYSTEM_MODE_ID, ESP_ZB_ZCL_ATTR_TYPE_8BIT_ENUM, RW | REP, &mode);
     addAttr(th, TH, ESP_ZB_ZCL_ATTR_THERMOSTAT_ABS_MIN_HEAT_SETPOINT_LIMIT_ID, ESP_ZB_ZCL_ATTR_TYPE_S16, R, &absMin);
