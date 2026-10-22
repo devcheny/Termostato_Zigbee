@@ -174,6 +174,12 @@ bool drawn = false;
 unsigned long lastTouch = 0;
 bool dimmed = false;
 bool pressed = false;           // dedo puesto (para no repetir acciones)
+bool settling = false;          // dedo recién apoyado, esperando lectura estable
+unsigned long touchDownAt = 0;
+int32_t lastX = 0, lastY = 0;   // última lectura con el dedo puesto
+unsigned long releaseSince = 0; // primera lectura sin dedo tras un toque (0 = no)
+const unsigned long TOUCH_SETTLE_MS = 40;
+const unsigned long TOUCH_RELEASE_MS = 60;
 UiAction repeatAction = UI_NONE;
 unsigned long nextRepeat = 0;
 
@@ -381,7 +387,12 @@ void readCalPoint(int32_t &rx, int32_t &ry) {
   const int SAMPLES = 6, MAX_ERR = 60;
   int32_t sx = 0, sy = 0, n = 0, x1, y1, x2, y2;
   while (n < SAMPLES) {
-    while (!lcd.getTouchRaw(&x1, &y1)) delay(2);
+    // Las lecturas de los primeros ms tras apoyar el dedo saltan: se descartan
+    if (!lcd.getTouchRaw(&x1, &y1)) {
+      while (!lcd.getTouchRaw(&x1, &y1)) delay(2);
+      delay(100);
+      continue;
+    }
     delay(10);
     if (!lcd.getTouchRaw(&x2, &y2) || abs(x1 - x2) > MAX_ERR || abs(y1 - y2) > MAX_ERR) continue;
     sx += x1 + x2;
@@ -524,6 +535,8 @@ void uiUpdate(const UiState &s) {
   drawn = true;
 }
 
+UiAction pressAt(int32_t x, int32_t y, unsigned long now);
+
 // Lee el táctil. Devuelve la acción pulsada (con autorrepetición en + / -).
 // El primer toque con la pantalla atenuada solo la enciende.
 UiAction uiPoll() {
@@ -533,6 +546,15 @@ UiAction uiPoll() {
   bool touch = lcd.getTouch(&x, &y);
 
   if (!touch) {
+    // Con poca presión el táctil pierde el contacto unos ms aunque el dedo siga
+    // apoyado: solo cuenta como soltar tras TOUCH_RELEASE_MS seguidos sin lectura
+    if (pressed || settling) {
+      if (!releaseSince) releaseSince = now;
+      if (now - releaseSince < TOUCH_RELEASE_MS) return UI_NONE;
+    }
+    releaseSince = 0;
+    // Toque tan breve que no llegó a asentarse: vale su última lectura
+    if (settling) return pressAt(lastX, lastY, now);
     pressed = false;
     repeatAction = UI_NONE;
     if (!dimmed && now - lastTouch > DIM_AFTER_MS) {
@@ -543,7 +565,10 @@ UiAction uiPoll() {
     return UI_NONE;
   }
 
+  releaseSince = 0;
   lastTouch = now;
+  lastX = x;
+  lastY = y;
   if (dimmed) {
     dimmed = false;
     backlight(BL_ON);
@@ -560,33 +585,39 @@ UiAction uiPoll() {
     return UI_NONE;
   }
 
+  // Las primeras lecturas al apoyar el dedo saltan decenas de píxeles (la presión aún
+  // no es firme): se decide con la lectura tomada TOUCH_SETTLE_MS después
+  if (!settling) {
+    settling = true;
+    touchDownAt = now;
+    return UI_NONE;
+  }
+  if (now - touchDownAt < TOUCH_SETTLE_MS) return UI_NONE;
+  return pressAt(x, y, now);
+}
+
+// Acción del botón que hay en (x, y)
+UiAction pressAt(int32_t x, int32_t y, unsigned long now) {
+  using namespace ui;
+  settling = false;
   pressed = true;
-  // Zonas de toque mayores que los botones dibujados: cada fila llega hasta la mitad
-  // del hueco con la vecina y la de abajo hasta el borde y más allá. El táctil
-  // resistivo se desvía 20-40 px abajo y los toques en el botón caían fuera de él.
   UiAction a = UI_NONE;
   if (screen == SCR_MENU) {
-    if (y < R_TOP.h) {
-      if (x < B_BACK.x + B_BACK.w + 16) screen = SCR_MAIN;
-    } else if (y < (B_SRC_INT.y + B_SRC_INT.h + B_CYC_MINUS.y) / 2) {
-      a = x < 240 ? UI_SRC_INT : UI_SRC_EXT;
-    } else if (y < (B_CYC_MINUS.y + B_CYC_MINUS.h + B_HON_MINUS.y) / 2) {
-      if (x < R_CYC.x)                 a = UI_CYC_DOWN;
-      else if (x >= R_CYC.x + R_CYC.w) a = UI_CYC_UP;
-    } else {
-      if (x < R_HON.x)                   a = UI_HON_DOWN;
-      else if (x >= R_HON.x + R_HON.w && x < 240) a = UI_HON_UP;
-      else if (x >= 240 && x < R_HOFF.x) a = UI_HOFF_DOWN;
-      else if (x >= R_HOFF.x + R_HOFF.w) a = UI_HOFF_UP;
-    }
+    if (B_BACK.hit(x, y))           screen = SCR_MAIN;
+    else if (B_SRC_INT.hit(x, y))   a = UI_SRC_INT;
+    else if (B_SRC_EXT.hit(x, y))   a = UI_SRC_EXT;
+    else if (B_CYC_MINUS.hit(x, y)) a = UI_CYC_DOWN;
+    else if (B_CYC_PLUS.hit(x, y))  a = UI_CYC_UP;
+    else if (B_HON_MINUS.hit(x, y))  a = UI_HON_DOWN;
+    else if (B_HON_PLUS.hit(x, y))   a = UI_HON_UP;
+    else if (B_HOFF_MINUS.hit(x, y)) a = UI_HOFF_DOWN;
+    else if (B_HOFF_PLUS.hit(x, y))  a = UI_HOFF_UP;
   } else {
-    if (y < R_TOP.h) {
-      if (x >= B_MENU.x - 20 && x < B_MENU.x + B_MENU.w + 20) screen = SCR_MENU;
-    } else if (y >= (B_MINUS.y + B_MINUS.h + B_HEAT.y) / 2) {
-      a = x < 240 ? UI_TOGGLE_HEAT : UI_TOGGLE_ACS;
-    } else if (y >= R_SP.y + R_SP.h - 18 && x >= R_SP.x) {
-      a = x < (B_MINUS.x + B_MINUS.w + B_PLUS.x) / 2 ? UI_SP_DOWN : UI_SP_UP;
-    }
+    if (B_MINUS.hit(x, y))     a = UI_SP_DOWN;
+    else if (B_PLUS.hit(x, y)) a = UI_SP_UP;
+    else if (B_HEAT.hit(x, y)) a = UI_TOGGLE_HEAT;
+    else if (B_ACS.hit(x, y))  a = UI_TOGGLE_ACS;
+    else if (B_MENU.hit(x, y)) screen = SCR_MENU;
   }
 
   if (a == UI_SP_DOWN || a == UI_SP_UP || a == UI_CYC_DOWN || a == UI_CYC_UP ||

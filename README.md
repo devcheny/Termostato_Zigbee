@@ -70,7 +70,6 @@ Pantalla de 3,5" 320×480 SPI con táctil resistivo (la que viene con lápiz).
   - Lo que cambies aquí se ve en HA, igual que si lo cambias desde HA.
 - Lo que cambies en la pantalla se ve en HA al momento, y al revés.
 - Tras 30 s sin tocarla se apaga la retroiluminación, para que dure años encendida día y noche (`DIM_AFTER_MS`; con `BL_DIM` mayor que 0 queda atenuada en vez de apagada). El táctil sigue activo: el primer toque solo la enciende, no pulsa ningún botón.
-- Las zonas de toque son algo mayores que los botones dibujados (la fila de abajo llega hasta el borde), porque el táctil resistivo se desvía varios milímetros cerca de los bordes. Si aun así falla mucho, recalibra.
 - Arriba: estado de la red Zigbee (verde = conectado, rojo = sin red, azul = actualizando firmware) y la humedad.
 
 **Chip de la pantalla:** se vende como "ILI9341", pero un ILI9341 no llega a 320×480. Estas pantallas llevan **ILI9488** (lo más habitual) o **ST7796S**. El sketch viene para ILI9488. Si la pantalla se queda en blanco o la imagen sale mal, comenta `#define PANEL_ILI9488` en [Pantalla.h](Pantalla.h) para usar ST7796S. Si los colores salen invertidos o con rojo y azul cambiados, cambia `PANEL_INVERT` o `PANEL_BGR`.
