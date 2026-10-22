@@ -561,23 +561,32 @@ UiAction uiPoll() {
   }
 
   pressed = true;
+  // Zonas de toque mayores que los botones dibujados: cada fila llega hasta la mitad
+  // del hueco con la vecina y la de abajo hasta el borde y más allá. El táctil
+  // resistivo se desvía 20-40 px abajo y los toques en el botón caían fuera de él.
   UiAction a = UI_NONE;
   if (screen == SCR_MENU) {
-    if (B_BACK.hit(x, y))           screen = SCR_MAIN;
-    else if (B_SRC_INT.hit(x, y))   a = UI_SRC_INT;
-    else if (B_SRC_EXT.hit(x, y))   a = UI_SRC_EXT;
-    else if (B_CYC_MINUS.hit(x, y)) a = UI_CYC_DOWN;
-    else if (B_CYC_PLUS.hit(x, y))  a = UI_CYC_UP;
-    else if (B_HON_MINUS.hit(x, y))  a = UI_HON_DOWN;
-    else if (B_HON_PLUS.hit(x, y))   a = UI_HON_UP;
-    else if (B_HOFF_MINUS.hit(x, y)) a = UI_HOFF_DOWN;
-    else if (B_HOFF_PLUS.hit(x, y))  a = UI_HOFF_UP;
+    if (y < R_TOP.h) {
+      if (x < B_BACK.x + B_BACK.w + 16) screen = SCR_MAIN;
+    } else if (y < (B_SRC_INT.y + B_SRC_INT.h + B_CYC_MINUS.y) / 2) {
+      a = x < 240 ? UI_SRC_INT : UI_SRC_EXT;
+    } else if (y < (B_CYC_MINUS.y + B_CYC_MINUS.h + B_HON_MINUS.y) / 2) {
+      if (x < R_CYC.x)                 a = UI_CYC_DOWN;
+      else if (x >= R_CYC.x + R_CYC.w) a = UI_CYC_UP;
+    } else {
+      if (x < R_HON.x)                   a = UI_HON_DOWN;
+      else if (x >= R_HON.x + R_HON.w && x < 240) a = UI_HON_UP;
+      else if (x >= 240 && x < R_HOFF.x) a = UI_HOFF_DOWN;
+      else if (x >= R_HOFF.x + R_HOFF.w) a = UI_HOFF_UP;
+    }
   } else {
-    if (B_MINUS.hit(x, y))     a = UI_SP_DOWN;
-    else if (B_PLUS.hit(x, y)) a = UI_SP_UP;
-    else if (B_HEAT.hit(x, y)) a = UI_TOGGLE_HEAT;
-    else if (B_ACS.hit(x, y))  a = UI_TOGGLE_ACS;
-    else if (B_MENU.hit(x, y)) screen = SCR_MENU;
+    if (y < R_TOP.h) {
+      if (x >= B_MENU.x - 20 && x < B_MENU.x + B_MENU.w + 20) screen = SCR_MENU;
+    } else if (y >= (B_MINUS.y + B_MINUS.h + B_HEAT.y) / 2) {
+      a = x < 240 ? UI_TOGGLE_HEAT : UI_TOGGLE_ACS;
+    } else if (y >= R_SP.y + R_SP.h - 18 && x >= R_SP.x) {
+      a = x < (B_MINUS.x + B_MINUS.w + B_PLUS.x) / 2 ? UI_SP_DOWN : UI_SP_UP;
+    }
   }
 
   if (a == UI_SP_DOWN || a == UI_SP_UP || a == UI_CYC_DOWN || a == UI_CYC_UP ||

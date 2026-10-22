@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000016
+#define FW_VERSION      0x00000017
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
