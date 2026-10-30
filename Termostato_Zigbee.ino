@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x00000019
+#define FW_VERSION      0x0000001A
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -68,6 +68,7 @@
 // arranca la versión anterior; si no se conecta en APP_ROLLBACK_AFTER_MS, vuelve atrás.
 #define APP_VALID_AFTER_MS    (2UL * 60 * 1000)
 #define ZB_SETTLE_MS          5000UL   // espera tras conectar antes de enviar informes
+#define ZB_BEGIN_WAIT_MS      8000UL   // espera máxima a entrar en la red al arrancar
 #define APP_ROLLBACK_AFTER_MS (15UL * 60 * 1000)
 
 // ---------------- Configuración ----------------
@@ -228,8 +229,9 @@ public:
     int16_t local = (int16_t)0x8000;   // "desconocida" hasta la primera lectura
     // La pila rechaza (INVALID_VALUE) una consigna de calor que no quede por debajo de
     // la de frío menos la banda muerta: con 26 ºC y 2,5 ºC HA no podía pasar de 23,5 ºC.
-    // Solo calienta, así que la de frío va fuera de alcance y la banda al mínimo (1 ºC).
-    int16_t heatSp = SETPOINT_DEFAULT, coolSp = SETPOINT_ABS_MAX + 300;
+    // Solo calienta: la de frío, a su máximo por defecto (32 ºC), y la banda al mínimo
+    // (1 ºC), así cabe hasta 31 ºC.
+    int16_t heatSp = SETPOINT_DEFAULT, coolSp = 3200;
     int8_t deadBand = 10;
     int16_t absMin = SETPOINT_ABS_MIN, absMax = SETPOINT_ABS_MAX;
     uint8_t seq = ESP_ZB_ZCL_THERMOSTAT_CONTROL_SEQ_OF_OPERATION_HEATING_ONLY;
@@ -1129,12 +1131,12 @@ void setup() {
 
   // End device con la radio siempre escuchando: responde al instante sin hacer de router
   Zigbee.setRxOnWhenIdle(true);
-  if (!Zigbee.begin(ZIGBEE_END_DEVICE)) {
-    Serial.println("Zigbee no ha arrancado, reiniciando...");
-    delay(1000);
-    ESP.restart();
-  }
-  Serial.println("Zigbee iniciado, buscando red...");
+  // Ya unido a una red, begin() espera a volver a entrar en ella. Si el coordinador no
+  // responde (HA apagado, o tarda más en arrancar tras un corte de luz) no se reinicia:
+  // el termostato sigue funcionando sin red y la pila lo reintenta sola.
+  Zigbee.setTimeout(ZB_BEGIN_WAIT_MS);
+  if (Zigbee.begin(ZIGBEE_END_DEVICE)) Serial.println("Zigbee iniciado, buscando red...");
+  else Serial.println("Zigbee sin red todavía: se sigue sin ella y se reintenta");
 
   zbThermostat.enableReports();
   zbAcs.enableReports();
