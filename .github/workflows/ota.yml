@@ -64,6 +64,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Lógica de relés (caldera, calefacción, ciclo mínimo): si falla, no hay release
+      - if: steps.ver.outputs.skip != 'true'
+        name: Probar la lógica de relés
+        run: python3 Termostato_Zigbee/tools/test_caldera.py
+
       - if: steps.ver.outputs.skip != 'true'
         name: Descargar versiones anteriores (para los parches delta)
         run: |

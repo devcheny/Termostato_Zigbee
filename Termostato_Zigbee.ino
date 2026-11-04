@@ -49,7 +49,7 @@
 
 // ---------------- Versión de firmware (OTA) ----------------
 // Súbela en cada versión nueva que quieras instalar por OTA. make_ota.py la lee de aquí.
-#define FW_VERSION      0x0000001A
+#define FW_VERSION      0x0000001B
 #define OTA_HW_VERSION  0x0001
 #define OTA_MANUFACTURER 0x131B   // código Zigbee de Espressif
 #define OTA_IMAGE_TYPE  0x0C60    // identifica el firmware de este termostato
@@ -538,6 +538,10 @@ void markDirty() {
 // al menos cfg.minCycle décimas de minuto. La calefacción cambia al momento, pero solo
 // puede estar encendida con la caldera encendida.
 void applyRelays() {
+  // Radiadores abiertos con la caldera apagada hacen perder presión a la instalación: al
+  // cortar la calefacción, sea cual sea el motivo, la caldera sigue encendida el ciclo
+  // entero desde ese momento (aunque lleve horas) para que cierre la electroválvula.
+  if (calefOn && !heatDemand) lastBoilerSwitch = millis();
   bool wantBoiler = cfg.acsOn || heatDemand;
   boilerWaiting = false;
   if (wantBoiler != boilerOn) {
